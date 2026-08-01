@@ -48,7 +48,14 @@ base64 = "0.22"
 # ONNX Runtime (YOLO element detection / PaddleOCR)
 # Pinned to =2.0.0-rc.12: rc.13 requires a newer onnxruntime (1.26 reports BadVersion).
 # Kept consistent with the main repo Cargo.lock so the main workspace and this repo behave identically.
-ort = { version = "=2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
+# default-features = false: the ort defaults pull ort-sys/download-binaries +
+# ort-sys/tls-native, which make ort-sys's build script link a system OpenSSL
+# (ureq -> native-tls). On linux-arm64 that OpenSSL build script runs for the
+# HOST and got polluted by the arm64 PKG_CONFIG_PATH (elf64-x86-64 mismatch on
+# libssl.so). load-dynamic already implies std + preload-dylibs +
+# ort-sys/disable-linking; nuphus-mcp's build.rs downloads the ONNX Runtime
+# itself, so download-binaries/tls-native/copy-dylibs are unnecessary.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "api-24", "tracing"] }
 ndarray = "0.17"
 
 # App data directory

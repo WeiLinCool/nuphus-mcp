@@ -118,13 +118,14 @@ jobs:
           fi
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
-          # EGL/GL and GBM, plus pipewire via libspa-sys. There are no audio
-          # crates in the dependency tree, so libasound2-dev stays out.
+          # EGL/GL and GBM, plus pipewire via libspa-sys. enigo 0.2's default
+          # xdo backend links libxdo (xdotool). No audio crates in the tree, so
+          # libasound2-dev stays out.
           LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
                 libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
                 libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
                 libxrandr-dev libxi-dev libpipewire-0.3-dev \
-                libgl1-mesa-dev libegl1-mesa-dev libgbm-dev"
+                libgl1-mesa-dev libegl1-mesa-dev libgbm-dev libxdo-dev"
           if $CROSS; then
             # Cross-compile: every dev lib must be the arm64 flavor so the
             # aarch64 toolchain finds matching headers/.pc files.
@@ -137,11 +138,11 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
 
-      - name: Set cross env (linux-arm64)
-        if: matrix.name == 'linux-arm64'
-        run: |
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+      # Cross env for linux-arm64 (PKG_CONFIG_PATH/PKG_CONFIG_ALLOW_CROSS) is
+      # scoped via .cargo/config.toml [target.aarch64-unknown-linux-gnu].env so
+      # it only reaches genuinely-arm64 crates — a global GITHUB_ENV leaked the
+      # arm64 path into host build-script deps (openssl-sys under ort-sys's
+      # build script) and made the host linker reject arm64 libssl.so.
 
       # aarch64-pc-windows-msvc needs the ARM64 MSVC LIB/INCLUDE paths so
       # lld-link can resolve the ARM64 CRT/import libs.
