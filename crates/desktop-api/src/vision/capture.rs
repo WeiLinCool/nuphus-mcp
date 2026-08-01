@@ -38,21 +38,8 @@ async fn capture_window(target: &Target) -> Result<Frame> {
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        if let Target::Window { hwnd, .. } = target {
-            // macOS/Linux: xcap captures the window directly (falls back to full-screen + crop)
-            let windows = XcapWindow::all().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
-            let win = windows.into_iter()
-                .find(|w| w.id() as isize == *hwnd);
-            if let Some(w) = win {
-                let image = w.capture_image().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
-                return convert_to_frame(image, Scope::Window, FrameSource::WindowCapture);
-            }
-        }
-    }
-
-    // Fallback: full-screen capture (all platforms)
+    // Fallback: full-screen capture (all platforms). Target::Window only exists
+    // on Windows, so a non-Windows window capture always lands here.
     capture_fullscreen().await
 }
 
@@ -114,13 +101,15 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
         // macOS/Linux: use xcap to get the window position for cropping
         let windows = XcapWindow::all().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
         let win = windows.into_iter()
-            .find(|w| w.id() as isize == hwnd)
+            .find(|w| w.id().ok().map(|id| id as isize) == Some(hwnd))
             .ok_or_else(|| DesktopError::CaptureFailed(format!("window {} not found", hwnd)))?;
 
-        let x = win.x().max(0) as u32;
-        let y = win.y().max(0) as u32;
-        let w = win.width();
-        let h = win.height();
+        // xcap 0.9 returns Result from x()/y()/width()/height() — default to 0
+        // on error so a stale window handle degrades to a full-screen crop.
+        let x = win.x().unwrap_or(0).max(0) as u32;
+        let y = win.y().unwrap_or(0).max(0) as u32;
+        let w = win.width().unwrap_or(0);
+        let h = win.height().unwrap_or(0);
 
         frame.crop(x, y, w, h)
             .ok_or_else(|| DesktopError::CaptureFailed("fullscreen crop failed".to_string()))

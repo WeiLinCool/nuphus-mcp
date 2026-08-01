@@ -88,10 +88,14 @@ jobs:
             sudo apt-get update && break || { echo "apt-get update failed (attempt $i), retrying..."; sleep 10; }
           done
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
+          # xcap 0.9 captures via X11/xcb + pipewire; alsa/gl are NOT in the
+          # dependency tree (no audio/GL crates), so libasound2-dev and
+          # libgl1-mesa-dev are intentionally omitted — they don't exist for
+          # arm64 cross and aren't needed.
           LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
                 libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
                 libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
-                libxrandr-dev libxi-dev libasound2-dev libgl1-mesa-dev"
+                libxrandr-dev libxi-dev libpipewire-0.3-dev"
           if $CROSS; then
             # Cross-compile: every dev lib must be the arm64 flavor so the
             # aarch64 toolchain finds matching headers/.pc files.

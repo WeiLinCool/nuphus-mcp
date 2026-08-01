@@ -25,29 +25,38 @@ impl WindowManager {
 
     /// Find a window - cache first
     pub fn find(&mut self, title: &str) -> Result<Target> {
-        if let Some(&hwnd) = self.cache.get(title) {
-            if self.is_valid(hwnd) {
-                let gfx = self.detect_gfx_backend(hwnd);
-                return Ok(Target::Window {
-                    hwnd,
-                    title: title.to_string(),
-                    verified: false,
-                    gfx_backend: gfx,
-                });
+        #[cfg(windows)]
+        {
+            if let Some(&hwnd) = self.cache.get(title) {
+                if self.is_valid(hwnd) {
+                    let gfx = self.detect_gfx_backend(hwnd);
+                    return Ok(Target::Window {
+                        hwnd,
+                        title: title.to_string(),
+                        verified: false,
+                        gfx_backend: gfx,
+                    });
+                }
             }
+
+            // Re-search
+            let hwnd = self.search(title)?;
+            self.cache.put(title.to_string(), hwnd);
+            let gfx = self.detect_gfx_backend(hwnd);
+
+            Ok(Target::Window {
+                hwnd,
+                title: title.to_string(),
+                verified: false,
+                gfx_backend: gfx,
+            })
         }
-
-        // Re-search
-        let hwnd = self.search(title)?;
-        self.cache.put(title.to_string(), hwnd);
-        let gfx = self.detect_gfx_backend(hwnd);
-
-        Ok(Target::Window {
-            hwnd,
-            title: title.to_string(),
-            verified: false,
-            gfx_backend: gfx,
-        })
+        #[cfg(not(windows))]
+        {
+            // Target::Window only exists on Windows; the window manager is a
+            // Win32 concept. Non-Windows callers fall through to Browser/Tui.
+            Err(DesktopError::PlatformNotSupported)
+        }
     }
 
     /// List all windows

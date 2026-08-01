@@ -25,7 +25,8 @@ pub async fn press(key: &str) -> Result<()> {
     {
         let ek = vk_to_enigo(vk)?;
         enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
-            .key_click(ek).map_err(|e| DesktopError::InputFailed(e.to_string()))
+            .key(ek, enigo::Direction::Click)
+            .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
     #[cfg(all(not(windows), not(any(target_os = "macos", target_os = "linux"))))]
     {
@@ -55,8 +56,12 @@ pub async fn hotkey(keys: &[&str]) -> Result<()> {
     {
         let mut e = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         let ekeys: Vec<enigo::Key> = vks.iter().map(|&v| vk_to_enigo(v)).collect::<Result<Vec<_>>>()?;
-        for k in &ekeys { e.key_down(*k).map_err(|e| DesktopError::InputFailed(e.to_string()))?; }
-        for k in ekeys.iter().rev() { e.key_up(*k).map_err(|e| DesktopError::InputFailed(e.to_string()))?; }
+        for k in &ekeys {
+            e.key(*k, enigo::Direction::Press).map_err(|e| DesktopError::InputFailed(e.to_string()))?;
+        }
+        for k in ekeys.iter().rev() {
+            e.key(*k, enigo::Direction::Release).map_err(|e| DesktopError::InputFailed(e.to_string()))?;
+        }
         Ok(())
     }
     #[cfg(all(not(windows), not(any(target_os = "macos", target_os = "linux"))))]
@@ -103,8 +108,8 @@ fn vk_to_enigo(vk: u16) -> Result<enigo::Key> {
         0x70 => F1, 0x71 => F2, 0x72 => F3, 0x73 => F4,
         0x74 => F5, 0x75 => F6, 0x76 => F7, 0x77 => F8,
         0x78 => F9, 0x79 => F10, 0x7A => F11, 0x7B => F12,
-        0x41..=0x5A => { let c = (vk - 0x41 + b'a') as char; Unicode(c) }
-        0x30..=0x39 => { let c = (vk - 0x30 + b'0') as char; Unicode(c) }
+        0x41..=0x5A => { let c = (vk - 0x41) as u8 + b'a'; Unicode(c as char) }
+        0x30..=0x39 => { let c = (vk - 0x30) as u8 + b'0'; Unicode(c as char) }
         _ => return Err(DesktopError::InputFailed(format!("unsupported key code: 0x{:X}", vk))),
     })
 }
