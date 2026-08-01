@@ -240,8 +240,32 @@ jobs:
       - name: Publish platform packages to npm
         working-directory: dist
         run: |
+          set -e
+          publish_pkg() {
+            local tgz="$1"
+            for i in 1 2 3 4 5; do
+              local out
+              out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; return 0; }
+              # E409: this exact version already exists (job re-run) → treat as success.
+              if echo "$out" | grep -qE "E409|cannot publish over"; then
+                echo "ALREADY PUBLISHED: $tgz"; return 0
+              fi
+              # npm's anti-spam heuristics flag rapid-fire NEW package names from
+              # fresh accounts; usually transient → back off and retry.
+              if echo "$out" | grep -qiE "spam detection|triggered spam"; then
+                echo "spam-blocked, retry $i/5: $tgz"; sleep $((i * 12)); continue
+              fi
+              echo "publish failed (attempt $i): $tgz"; echo "$out" | tail -3
+              sleep 10
+            done
+            echo "GAVE UP AFTER RETRIES: $tgz"
+            return 1
+          }
           for tgz in nuphus-mcp-*.tgz; do
-            npm publish "$tgz" --access public
+            publish_pkg "$tgz"
+            # Space new-package creations out: creating several new names in a few
+            # seconds trips npm's spam detection on a new account.
+            sleep 8
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NUPHUS_MCP_NPM }}
@@ -252,7 +276,16 @@ jobs:
         run: |
           npm pack --pack-destination dist-meta ./npm/packages/nuphus-mcp
           cd dist-meta
-          npm publish nuphus-mcp-*.tgz --access public
+          ok=""
+          for tgz in nuphus-mcp-*.tgz; do
+            for i in 1 2 3 4 5; do
+              out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; ok=1; break; }
+              if echo "$out" | grep -qE "E409|cannot publish over"; then echo "ALREADY PUBLISHED: $tgz"; ok=1; break; fi
+              if echo "$out" | grep -qiE "spam detection|triggered spam"; then echo "spam-blocked, retry $i/5: $tgz"; sleep $((i * 12)); continue; fi
+              echo "publish failed (attempt $i): $tgz"; echo "$out" | tail -3; sleep 10
+            done
+            [ -n "$ok" ] || { echo "FATAL: could not publish $tgz"; exit 1; }
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NUPHUS_MCP_NPM }}
 
