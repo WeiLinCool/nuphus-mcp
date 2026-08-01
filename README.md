@@ -100,6 +100,22 @@ All other tools need no API key.
 
 ## Install & Run
 
+**Install via npm (recommended — all platforms, prebuilt binaries):**
+
+```sh
+npm install -g @nuphus/nuphus-mcp
+```
+
+The `nuphus-mcp` meta package installs the prebuilt binary for your platform
+automatically (Windows x64/arm64, macOS arm64, Linux x64/arm64) and puts the
+`nuphus-mcp` command on your PATH. No Rust toolchain needed:
+
+```sh
+nuphus-mcp   # stdio MCP server
+```
+
+**Build from source** (requires the Rust toolchain):
+
 ```sh
 cargo build --release -p nuphus-mcp
 # binary at target/release/nuphus-mcp(.exe)
@@ -110,13 +126,14 @@ responses to stdout. Logs go to stderr.
 
 ```sh
 # quick smoke test
-echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | .\target\debug\nuphus-mcp.exe
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | nuphus-mcp
 ```
 
 ## MCP Client Configuration
 
-Point any MCP client at the binary. The `command` is the path to
-`nuphus-mcp` (or `nuphus-mcp.exe`).
+Point any MCP client at `nuphus-mcp`. After `npm install -g
+@nuphus/nuphus-mcp` the command is on your PATH; otherwise use the absolute
+path to the binary (`nuphus-mcp` / `nuphus-mcp.exe`).
 
 **Claude Desktop** — `claude_desktop_config.json`:
 
@@ -124,7 +141,7 @@ Point any MCP client at the binary. The `command` is the path to
 {
   "mcpServers": {
     "nuphus-mcp": {
-      "command": "C:\\path\\to\\nuphus-mcp.exe",
+      "command": "nuphus-mcp",
       "args": []
     }
   }
@@ -137,7 +154,7 @@ Point any MCP client at the binary. The `command` is the path to
 {
   "mcpServers": {
     "nuphus-mcp": {
-      "command": "/absolute/path/to/nuphus-mcp",
+      "command": "nuphus-mcp",
       "args": [],
       "env": {}
     }

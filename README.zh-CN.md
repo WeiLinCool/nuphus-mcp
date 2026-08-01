@@ -88,6 +88,22 @@ nuphus-mcp/
 
 ## 安装与运行
 
+**npm 安装（推荐 —— 全平台，预编译二进制）：**
+
+```sh
+npm install -g @nuphus/nuphus-mcp
+```
+
+`nuphus-mcp` meta 包会自动安装当前平台对应的预编译二进制（Windows
+x64/arm64、macOS arm64、Linux x64/arm64），并把 `nuphus-mcp` 命令加入 PATH。
+无需 Rust 工具链：
+
+```sh
+nuphus-mcp   # stdio MCP server
+```
+
+**源码构建**（需要 Rust 工具链）：
+
 ```sh
 cargo build --release -p nuphus-mcp
 # 二进制在 target/release/nuphus-mcp(.exe)
@@ -98,13 +114,14 @@ stderr。
 
 ```sh
 # 快速冒烟
-echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | .\target\debug\nuphus-mcp.exe
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | nuphus-mcp
 ```
 
 ## MCP 客户端配置
 
-把任意 MCP 客户端指向该二进制即可。`command` 为 `nuphus-mcp`（或
-`nuphus-mcp.exe`）的路径。
+把任意 MCP 客户端指向 `nuphus-mcp` 即可。`npm install -g
+@nuphus/nuphus-mcp` 之后命令已在 PATH 上；否则使用二进制的绝对路径
+（`nuphus-mcp` / `nuphus-mcp.exe`）。
 
 **Claude Desktop** — `claude_desktop_config.json`：
 
@@ -112,7 +129,7 @@ echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":
 {
   "mcpServers": {
     "nuphus-mcp": {
-      "command": "C:\\path\\to\\nuphus-mcp.exe",
+      "command": "nuphus-mcp",
       "args": []
     }
   }
@@ -125,7 +142,7 @@ echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":
 {
   "mcpServers": {
     "nuphus-mcp": {
-      "command": "/absolute/path/to/nuphus-mcp",
+      "command": "nuphus-mcp",
       "args": [],
       "env": {}
     }
