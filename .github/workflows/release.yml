@@ -131,13 +131,17 @@ jobs:
             echo "PKG_CONFIG_ALLOW_CROSS_aarch64_unknown_linux_gnu=1" >> "$GITHUB_ENV"
             echo "PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
           fi
-          HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
+          # unzip must stay HOST-arch: the cross branch appends :arm64 to every
+          # LIBS entry, and unzip is not Multi-Arch — apt would remove the amd64
+          # unzip and install an arm64 one that can't exec on the x86_64 host
+          # (breaking build.rs's nupkg extraction fallback).
+          HOST_PKGS="pkg-config gcc-aarch64-linux-gnu unzip"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
           # EGL/GL and GBM, plus pipewire via libspa-sys. enigo 0.2's default
           # xdo backend links libxdo (xdotool). unzip is the fallback extractor
           # in build.rs for the onnxruntime nupkg (GNU tar can't read zip).
           # No audio crates in the tree, so libasound2-dev stays out.
-          LIBS="unzip libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
+          LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
                 libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
                 libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
                 libxrandr-dev libxi-dev libpipewire-0.3-dev \
