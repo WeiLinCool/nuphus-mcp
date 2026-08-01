@@ -103,7 +103,9 @@ impl SecurityPolicy {
 }
 
 /// Screenshot save path validation: forbid path traversal, Windows device paths, and system-protected directories.
-/// Relative paths are allowed (relative to the server working directory); returns Ok(normalized absolute path) for writing.
+///
+/// Relative paths are allowed and resolved against the server working directory.
+/// Returns `Ok(normalized absolute path)` ready for writing.
 pub fn validate_screenshot_path(path: &str) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -118,12 +120,22 @@ pub fn validate_screenshot_path(path: &str) -> Result<String, String> {
     if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err("screenshot path must not contain '..'".to_string());
     }
+    // Resolve to an absolute path (relative → against the server working directory),
+    // so the protected-dir and parent-exists checks below evaluate the real location
+    // and the returned value is directly usable for writing.
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot resolve current directory: {e}"))?
+            .join(p)
+    };
     // System-protected directories
-    if in_system_protected_dir(p) {
+    if in_system_protected_dir(&abs) {
         return Err("screenshot path must not point into a system-protected directory".to_string());
     }
     // Parent directory must exist (avoid writing into an arbitrary missing directory and failing later)
-    if let Some(parent) = p.parent() {
+    if let Some(parent) = abs.parent() {
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
             return Err(format!(
                 "screenshot parent directory does not exist: {}",
@@ -131,7 +143,7 @@ pub fn validate_screenshot_path(path: &str) -> Result<String, String> {
             ));
         }
     }
-    Ok(trimmed.to_string())
+    Ok(abs.to_string_lossy().to_string())
 }
 
 /// Upload file validation: must be an existing regular file (readable).
@@ -259,5 +271,30 @@ mod tests {
     fn upload_file_validation_requires_existing_file() {
         assert!(validate_upload_file("").is_err());
         assert!(validate_upload_file("Z:\\definitely\\missing\\file.bin").is_err());
+    }
+
+    /// Anti-drift guard: every tool declared in tools/list must be classified as either
+    /// write or read, otherwise strict-confirm mode (which only gates write tools) and
+    /// annotations silently misbehave for new tools added later.
+    #[test]
+    fn every_tool_is_classified_write_or_read() {
+        use crate::tools::all_tools;
+        for tool in all_tools() {
+            let args = json!({});
+            let is_w = is_write_tool(tool.name, &args);
+            let is_r = is_read_only_tool(tool.name, &args);
+            assert!(
+                is_w || is_r,
+                "tool '{}' is neither write nor read — add it to is_write_tool/is_read_only_tool",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn relative_screenshot_path_resolves_to_absolute() {
+        let p = validate_screenshot_path("nuphus_shot.bmp")
+            .expect("cwd-relative path passes when cwd exists");
+        assert!(std::path::Path::new(&p).is_absolute(), "must be absolute: {p}");
     }
 }

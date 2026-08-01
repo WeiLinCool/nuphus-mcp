@@ -124,7 +124,35 @@ async fn download_with_fallback(
     Err(last_err.unwrap_or_else(|| "no source".to_string()))
 }
 
-/// Stream-download a single file to a temp path, then rename atomically (avoid a partial file being treated as a valid model).
+/// Minimum accepted file size per model (bytes).
+///
+/// Guards against empty/truncated downloads that succeed with HTTP 200 but carry an
+/// error page or a partial body. RapidOCR PP-OCRv4 ONNX models are ~4-6 MB and the
+/// character dictionary ~60 KB, so these floors can never reject a real artifact.
+fn min_expected_bytes(file: &str) -> u64 {
+    match file {
+        "ch_PP-OCRv4_det.onnx" | "ch_PP-OCRv4_rec.onnx" => 100_000,
+        "ch_PP-OCR_keys_v1.txt" => 1_000,
+        _ => 0,
+    }
+}
+
+/// Optional per-file SHA-256 enforcement.
+///
+/// If `NUPHUS_MCP_MODEL_SHA256_<FILE>` is set, downloaded bytes must match the given
+/// digest or the download is rejected. This lets operators pin downloads to a known-good
+/// artifact (e.g. a trusted mirror) against supply-chain tampering. When unset, only the
+/// size floor above applies.
+fn expected_sha256(file: &str) -> Option<String> {
+    let key = format!("NUPHUS_MCP_MODEL_SHA256_{file}");
+    std::env::var(&key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Stream-download a single file to a temp path, verify integrity, then rename atomically
+/// (avoid a partial or tampered file being treated as a valid model).
 async fn download_file(
     client: &reqwest::Client,
     url: &str,
@@ -157,6 +185,34 @@ async fn download_file(
     file.flush().await.map_err(|e| format!("flush failed: {e}"))?;
     drop(file);
 
+    // Integrity check before the temp file can become a "valid" model.
+    let file_name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let meta = tokio::fs::metadata(&tmp)
+        .await
+        .map_err(|e| format!("stat temp file {} failed: {e}", tmp.display()))?;
+    let floor = min_expected_bytes(file_name);
+    if meta.len() < floor {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!(
+            "download too small ({} bytes < {floor} floor), refusing to use as model: {file_name}",
+            meta.len()
+        ));
+    }
+    if let Some(expected) = expected_sha256(file_name) {
+        let bytes = tokio::fs::read(&tmp)
+            .await
+            .map_err(|e| format!("read temp file for hashing failed: {e}"))?;
+        use sha2::{Digest, Sha256};
+        let actual = hex::encode(Sha256::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(&expected) {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(format!(
+                "model SHA-256 mismatch for {file_name}: got {actual}, expected {expected}. \
+                 Fix NUPHUS_MCP_MODEL_SHA256_{file_name} or unset it to skip hashing"
+            ));
+        }
+    }
+
     std::fs::rename(&tmp, dest).map_err(|e| format!("rename to {} failed: {e}", dest.display()))?;
     tracing::info!("[models] download complete: {} <- {}", dest.display(), url);
     Ok(())
@@ -178,5 +234,25 @@ mod tests {
     fn unknown_file_has_no_source() {
         assert!(sources_for("nope.onnx").is_empty());
         assert_eq!(desktop_api::vision::models::YOLO_MODEL, "icon_detect.onnx");
+    }
+
+    #[test]
+    fn size_floor_covers_known_models() {
+        for f in PADDLE_OCR_FILES {
+            assert!(min_expected_bytes(f) > 0, "{f} must have a size floor");
+        }
+        assert_eq!(min_expected_bytes("nope.onnx"), 0);
+    }
+
+    #[test]
+    fn sha256_env_override_respected() {
+        let _lock = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        const KEY: &str = "NUPHUS_MCP_MODEL_SHA256_ch_PP-OCRv4_det.onnx";
+        std::env::set_var(KEY, "  abc  ");
+        assert_eq!(expected_sha256("ch_PP-OCRv4_det.onnx"), Some("abc".to_string()));
+        std::env::remove_var(KEY);
+        assert_eq!(expected_sha256("ch_PP-OCRv4_det.onnx"), None);
     }
 }

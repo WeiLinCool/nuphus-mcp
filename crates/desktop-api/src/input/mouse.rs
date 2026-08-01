@@ -60,7 +60,9 @@ pub async fn click(x: i32, y: i32) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         };
-        unsafe { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); std::thread::sleep(std::time::Duration::from_millis(50)); mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); }
+        unsafe { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        unsafe { mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -83,7 +85,9 @@ pub async fn right_click(x: i32, y: i32) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             mouse_event, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
         };
-        unsafe { mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0); std::thread::sleep(std::time::Duration::from_millis(50)); mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0); }
+        unsafe { mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0); }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        unsafe { mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0); }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -108,7 +112,7 @@ pub async fn scroll(direction: &str, amount: i32) -> Result<()> {
         let delta: i32 = if direction == "up" { 120 } else { -120 };
         for _ in 0..amount.max(0) {
             unsafe { mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0); }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         Ok(())
     }
@@ -134,7 +138,7 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
             let x = (start.x as f32 + (end.x as f32 - start.x as f32) * t) as i32;
             let y = (start.y as f32 + (end.y as f32 - start.y as f32) * t) as i32;
             let _ = move_to(x, y).await;
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         unsafe { mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); }
         Ok(())
@@ -149,7 +153,7 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
             let x = (start.x as f32 + (end.x as f32 - start.x as f32) * t) as i32;
             let y = (start.y as f32 + (end.y as f32 - start.y as f32) * t) as i32;
             let _ = move_to(x, y).await;
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let mut e = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         e.button_up(enigo::MouseButton::Left).map_err(|e| DesktopError::InputFailed(e.to_string()))

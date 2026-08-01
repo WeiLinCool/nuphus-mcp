@@ -365,19 +365,27 @@ async fn mouse(args: &Value) -> Result<String, String> {
             Ok(json!({ "moved_to": { "x": x, "y": y } }).to_string())
         }
         "click" | "double_click" => {
+            let button = args.get("button").and_then(Value::as_str).unwrap_or("left");
             let clicks = if action == "double_click" {
                 2
             } else {
                 args.get("clicks").and_then(Value::as_i64).unwrap_or(1).max(1) as u32
             };
-            // mouse::click internally calls move_to(x, y) first
+            // click/right_click internally move_to(x, y) first
             for _ in 0..clicks {
-                input::mouse::click(x, y)
-                    .await
-                    .map_err(|e| format!("mouse click failed: {}", e))?;
+                match button {
+                    "left" => input::mouse::click(x, y)
+                        .await
+                        .map_err(|e| format!("mouse click failed: {}", e))?,
+                    "right" => input::mouse::right_click(x, y)
+                        .await
+                        .map_err(|e| format!("mouse right click failed: {}", e))?,
+                    "middle" => return Err("middle button click is not supported".to_string()),
+                    other => return Err(format!("unknown mouse button: {}", other)),
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             }
-            Ok(json!({ "clicked": { "x": x, "y": y, "clicks": clicks } }).to_string())
+            Ok(json!({ "clicked": { "x": x, "y": y, "clicks": clicks, "button": button } }).to_string())
         }
         "scroll" => {
             let direction = args.get("direction").and_then(Value::as_str).unwrap_or("down");
@@ -421,13 +429,25 @@ async fn input(args: &Value) -> Result<String, String> {
                 return Err("text is required for mode=type".to_string());
             }
             if text.len() > 500 {
-                // Long text goes through clipboard + paste
+                // Long text goes through clipboard + paste. Save the previous clipboard
+                // content first and restore it right after pasting, so the user's
+                // clipboard isn't silently clobbered (F5).
+                let prev = desktop_api::clipboard::read_text().ok();
                 desktop_api::clipboard::write_text(text)
                     .map_err(|e| format!("clipboard write failed: {}", e))?;
                 engine
                     .hotkey(&mut target, &["ctrl", "v"])
                     .await
                     .map_err(|e| format!("paste failed: {}", e))?;
+                match prev {
+                    Some(saved) if !saved.is_empty() => {
+                        desktop_api::clipboard::write_text(&saved).map_err(|e| {
+                            format!("paste done but clipboard restore failed: {e}")
+                        })?;
+                    }
+                    // Nothing to restore (or unreadable clipboard) → leave it clean.
+                    _ => { let _ = desktop_api::clipboard::write_text(""); }
+                }
             } else {
                 engine
                     .send_text(text, &mut target)

@@ -16,7 +16,9 @@ pub async fn press(key: &str) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             keybd_event, KEYEVENTF_KEYUP,
         };
-        unsafe { keybd_event(vk as u8, 0, Default::default(), 0); std::thread::sleep(std::time::Duration::from_millis(50)); keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0); }
+        unsafe { keybd_event(vk as u8, 0, Default::default(), 0); }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        unsafe { keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0); }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -39,8 +41,14 @@ pub async fn hotkey(keys: &[&str]) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             keybd_event, KEYEVENTF_KEYUP,
         };
-        for &vk in &vks { unsafe { keybd_event(vk as u8, 0, Default::default(), 0); } std::thread::sleep(std::time::Duration::from_millis(30)); }
-        for &vk in vks.iter().rev() { unsafe { keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0); } std::thread::sleep(std::time::Duration::from_millis(30)); }
+        for &vk in &vks {
+            unsafe { keybd_event(vk as u8, 0, Default::default(), 0); }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        for &vk in vks.iter().rev() {
+            unsafe { keybd_event(vk as u8, 0, KEYEVENTF_KEYUP, 0); }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
         Ok(())
     }
     #[cfg(not(windows))]

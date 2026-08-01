@@ -7,6 +7,23 @@
 use std::time::Duration;
 use serde_json::Value;
 
+/// Allowed navigation URL schemes. Rejects `file://`, `javascript:`, `data:` etc.,
+/// which could otherwise read local files or bypass page-context sandboxing.
+fn validate_nav_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("url parameter must not be empty".to_string());
+    }
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported URL scheme (only http/https allowed): {url}"
+        ))
+    }
+}
+
 /// Execute a browser_* tool, returning a text result.
 pub async fn execute(name: &str, args: &Value) -> Result<String, String> {
     // Unified timeout guard (CDP operations may hang): same policy as the main crate's browser_tools.rs
@@ -41,6 +58,7 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
     let output = match name {
         "browser_navigate" => {
             let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+            validate_nav_url(url)?;
             let result = client.navigate(url).await.map_err(|e| e.to_string())?;
             // Auto-snapshot after navigation
             match client.snapshot(false, None).await {
@@ -95,8 +113,16 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
             client.extract(max_chars).await.map_err(|e| e.to_string())?
         }
         "browser_screenshot" => {
-            let path = args.get("path").and_then(Value::as_str);
-            client.screenshot(path).await.map_err(|e| e.to_string())?
+            let path = match args.get("path").and_then(Value::as_str) {
+                Some(p) => {
+                    // Same path guard as desktop_screenshot: no path traversal /
+                    // system-protected dirs. Prevents arbitrary file overwrite.
+                    // Returns the normalized absolute path to write to.
+                    Some(crate::security::validate_screenshot_path(p)?)
+                }
+                None => None,
+            };
+            client.screenshot(path.as_deref()).await.map_err(|e| e.to_string())?
         }
         "browser_close" => {
             client.close().await.map_err(|e| e.to_string())?;
@@ -145,7 +171,13 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         }
         "browser_list_downloads" => client.list_downloads().map_err(|e| e.to_string())?,
         "browser_new_tab" => {
-            let url = args.get("url").and_then(Value::as_str);
+            let url = match args.get("url").and_then(Value::as_str) {
+                Some(u) => {
+                    validate_nav_url(u)?;
+                    Some(u)
+                }
+                None => None,
+            };
             client.new_tab(url).await.map_err(|e| e.to_string())?
         }
         "browser_list_tabs" => {

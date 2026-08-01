@@ -26,8 +26,10 @@ pub mod codes {
     pub const INTERNAL_ERROR: i32 = -32603;
     /// Server not initialized — business request received before the initialize handshake
     pub const SERVER_NOT_INITIALIZED: i32 = -32000;
-    /// Tool execution failed (semantic error, surfaced via content.isError)
-    pub const TOOL_EXECUTION_ERROR: i32 = -32001;
+    // Note: tool execution errors are NOT mapped to a JSON-RPC error code. Per MCP spec,
+    // a tools/call semantic failure is returned as a successful response with
+    // `content.isError: true` (see tools::execute → ToolOutput::failure). The only
+    // JSON-RPC error a tools/call can produce here is INVALID_PARAMS for an unknown tool name.
 }
 
 /// Inbound JSON-RPC request (including notifications: no `id` means notification, no response needed)

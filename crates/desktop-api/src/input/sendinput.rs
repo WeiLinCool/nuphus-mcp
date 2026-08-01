@@ -64,6 +64,9 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
                 "Target window is not in foreground, input rejected".to_string()
             ));
         }
+        // RAII guard: detaches the thread-input attachment on ANY exit (success or
+        // error), so a mid-stream SendInput failure can't leak the attachment.
+        let _attach_guard = ThreadInputGuard { target_tid: target.attached_hwnd };
 
         // ── 2. Encoding conversion: UTF-8 → UTF-16 codepoint sequence ──
         let codepoints = encode_utf16_codepoints(text);
@@ -104,12 +107,8 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
             std::thread::sleep(std::time::Duration::from_millis(session.post_delay_ms));
         }
 
-        // ── 6. Restore focus (if Attach was used earlier) ──
-        if let Some(tid) = target.attached_hwnd {
-            unsafe {
-                let _ = AttachThreadInput(GetCurrentThreadId(), tid, false);
-            }
-        }
+        // ── 6. Restore focus (if Attach was used earlier) — handled by
+        // `_attach_guard`'s Drop on exit. ──
 
         Ok(total_sent)
     }
@@ -144,6 +143,22 @@ pub fn input_to_focus(text: &str, press_enter: bool) -> Result<usize> {
 struct FocusResult {
     attached_hwnd: Option<u32>,
     verified: bool,
+}
+
+/// RAII guard that detaches a thread-input attachment on drop, so it is released
+/// on every exit path (success, error, early return) instead of only the happy path.
+struct ThreadInputGuard {
+    target_tid: Option<u32>,
+}
+
+impl Drop for ThreadInputGuard {
+    fn drop(&mut self) {
+        if let Some(tid) = self.target_tid {
+            unsafe {
+                let _ = AttachThreadInput(GetCurrentThreadId(), tid, false);
+            }
+        }
+    }
 }
 
 /// Prepare the window focus, returning the thread ID to detach

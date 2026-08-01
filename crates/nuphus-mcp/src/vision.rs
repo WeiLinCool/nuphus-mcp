@@ -42,6 +42,19 @@ impl VisionConfig {
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         let base_url = base_url.trim_end_matches('/').to_string();
 
+        // Enforce HTTPS: screenshots sent to a remote endpoint must not leak over
+        // plaintext. Loopback (localhost/127.0.0.1) is allowed over http for local
+        // test endpoints (e.g. Ollama).
+        let is_loopback = match reqwest::Url::parse(&base_url) {
+            Ok(u) => matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "::1")),
+            Err(_) => false,
+        };
+        if base_url.starts_with("http://") && !is_loopback {
+            return Err(format!(
+                "NUPHUS_MCP_VISION_BASE_URL must use https (plain http is only allowed for localhost/127.0.0.1 test endpoints): {base_url}"
+            ));
+        }
+
         Ok(Self {
             api_key,
             base_url,
@@ -221,6 +234,28 @@ mod tests {
         assert_eq!(cfg.api_key, "sk-test");
         assert_eq!(cfg.model, "qwen-vl-max");
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn remote_http_base_url_rejected() {
+        let _lock = env_lock();
+        let _g = EnvGuard::clear();
+        std::env::set_var("NUPHUS_MCP_VISION_API_KEY", "sk-test");
+        std::env::set_var("NUPHUS_MCP_VISION_MODEL", "m");
+        std::env::set_var("NUPHUS_MCP_VISION_BASE_URL", "http://api.example.com/v1");
+        let err = VisionConfig::from_env().expect_err("remote http must fail");
+        assert!(err.contains("https"), "error must mention https: {err}");
+    }
+
+    #[test]
+    fn localhost_http_base_url_allowed() {
+        let _lock = env_lock();
+        let _g = EnvGuard::clear();
+        std::env::set_var("NUPHUS_MCP_VISION_API_KEY", "sk-test");
+        std::env::set_var("NUPHUS_MCP_VISION_MODEL", "m");
+        std::env::set_var("NUPHUS_MCP_VISION_BASE_URL", "http://127.0.0.1:11434/v1");
+        let cfg = VisionConfig::from_env().expect("loopback http ok");
+        assert_eq!(cfg.base_url, "http://127.0.0.1:11434/v1");
     }
 
     #[test]

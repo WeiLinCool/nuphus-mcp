@@ -171,6 +171,17 @@ async fn capture_region(x: i32, y: i32, w: u32, h: u32) -> Result<Frame> {
 
     let x = x.max(0) as u32;
     let y = y.max(0) as u32;
+
+    // Out-of-bounds guard: a region starting beyond the frame edge would make
+    // `frame.width - x` / `frame.height - y` underflow (u32) and panic in debug
+    // builds. Fail with a clear error instead of crashing the server.
+    if x >= frame.width || y >= frame.height {
+        return Err(DesktopError::CaptureFailed(format!(
+            "capture region out of bounds: x={x}, y={y}, screen={}x{}",
+            frame.width, frame.height
+        )));
+    }
+
     let w = w.min(frame.width - x);
     let h = h.min(frame.height - y);
 
