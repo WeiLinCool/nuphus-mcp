@@ -274,13 +274,22 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NUPHUS_MCP_NPM }}
 
       # Pack the meta package to a SEPARATE dir so the glob above never
-      # re-matches (and re-publishes) the platform tarballs.
+      # re-matches (and re-publishes) the platform tarballs. Mirror the
+      # platform step: create the dir first and use an ABSOLUTE
+      # --pack-destination. With a bare relative path npm resolves the
+      # destination against the folder being packed (not the CWD) on the
+      # runner's npm version, so the tarball landed inside
+      # npm/packages/nuphus-mcp/ and ./dist-meta stayed empty → ENOENT at
+      # publish. Absolute + mkdir makes the behavior version-independent.
       - name: Pack + publish meta package
         run: |
-          npm pack --pack-destination dist-meta ./npm/packages/nuphus-mcp
-          cd dist-meta
+          set -e
+          meta_dist="${{ github.workspace }}/dist-meta"
+          mkdir -p "$meta_dist"
+          npm pack --pack-destination "$meta_dist" ./npm/packages/nuphus-mcp
+          ls -la "$meta_dist"
           ok=""
-          for tgz in *.tgz; do
+          for tgz in "$meta_dist"/*.tgz; do
             for i in 1 2 3 4 5; do
               out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; ok=1; break; }
               if echo "$out" | grep -qE "E409|cannot publish over"; then echo "ALREADY PUBLISHED: $tgz"; ok=1; break; fi
