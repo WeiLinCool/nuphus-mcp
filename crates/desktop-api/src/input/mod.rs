@@ -37,6 +37,11 @@ impl InputEngine {
                 // Windows: SendInput Unicode
                 sendinput::send_unicode_text(text)?;
             }
+            #[cfg(not(windows))]
+            Target::Tui { .. } => {
+                // Non-Windows: no TUI text-input path yet (Tui is effectively a
+                // Windows concept); keep the match exhaustive.
+            }
             Target::Browser { .. } => {
                 // Browser: Playwright input
                 // TODO: call the browser module

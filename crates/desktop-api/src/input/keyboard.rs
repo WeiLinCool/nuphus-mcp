@@ -3,9 +3,14 @@
 use crate::core::*;
 
 #[cfg(not(windows))]
+use enigo::Keyboard as _;
+
+#[cfg(not(windows))]
 fn enigo() -> std::sync::Mutex<enigo::Enigo> {
     static INST: std::sync::OnceLock<std::sync::Mutex<enigo::Enigo>> = std::sync::OnceLock::new();
-    INST.get_or_init(|| std::sync::Mutex::new(enigo::Enigo::new(&enigo::Settings::default()))).clone()
+    INST.get_or_init(|| std::sync::Mutex::new(
+        enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init failed")
+    )).clone()
 }
 
 /// Send a key press

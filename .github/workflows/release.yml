@@ -99,6 +99,14 @@ jobs:
           for i in 1 2 3; do
             sudo apt-get update && break || { echo "apt-get update failed (attempt $i), retrying..."; sleep 10; }
           done
+          if $CROSS; then
+            # libc6 is Multi-Arch: same — apt refuses a second arch at a
+            # different version, so every :arm64 dev lib fails on a missing
+            # libc6:arm64 ("held broken packages"). The runner's amd64 libc6
+            # (security-updated) is usually newer than the arm64 repo's, so pin
+            # arm64 libc6 to the host version before installing the dev libs.
+            sudo apt-get install -y libc6:arm64="$(dpkg-query -W -f='${Version}' libc6)"
+          fi
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
           # EGL/GL and GBM, plus pipewire via libspa-sys. There are no audio
