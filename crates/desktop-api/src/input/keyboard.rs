@@ -5,12 +5,17 @@ use crate::core::*;
 #[cfg(not(windows))]
 use enigo::Keyboard as _;
 
+/// Create a fresh enigo instance (macOS / Linux).
+///
+/// macOS's enigo backend holds a `CGEventSource` that is not `Send`, so an
+/// instance can't live behind a shared `OnceLock<Mutex<_>>` (that would need
+/// `Enigo: Send`). Reconstructing per call sidesteps the `Send` bound and the
+/// `MutexGuard` temporary-lifetime traps entirely; input ops are low-frequency
+/// so the per-call init cost is negligible.
 #[cfg(not(windows))]
-fn enigo() -> std::sync::Mutex<enigo::Enigo> {
-    static INST: std::sync::OnceLock<std::sync::Mutex<enigo::Enigo>> = std::sync::OnceLock::new();
-    INST.get_or_init(|| std::sync::Mutex::new(
-        enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init failed")
-    )).clone()
+fn enigo() -> Result<enigo::Enigo> {
+    enigo::Enigo::new(&enigo::Settings::default())
+        .map_err(|e| DesktopError::InputFailed(e.to_string()))
 }
 
 /// Send a key press
@@ -29,7 +34,7 @@ pub async fn press(key: &str) -> Result<()> {
     #[cfg(not(windows))]
     {
         let ek = vk_to_enigo(vk)?;
-        enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
+        enigo()?
             .key(ek, enigo::Direction::Click)
             .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
@@ -59,8 +64,8 @@ pub async fn hotkey(keys: &[&str]) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let mut e = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         let ekeys: Vec<enigo::Key> = vks.iter().map(|&v| vk_to_enigo(v)).collect::<Result<Vec<_>>>()?;
+        let mut e = enigo()?;
         for k in &ekeys {
             e.key(*k, enigo::Direction::Press).map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         }

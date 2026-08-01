@@ -55,6 +55,7 @@ impl WindowManager {
         {
             // Target::Window only exists on Windows; the window manager is a
             // Win32 concept. Non-Windows callers fall through to Browser/Tui.
+            let _ = title;
             Err(DesktopError::PlatformNotSupported)
         }
     }
@@ -92,6 +93,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = hwnd;
             false
         }
     }
@@ -103,6 +105,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = hwnd;
             GfxBackend::Unknown
         }
     }
@@ -131,6 +134,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = title;
             Err(DesktopError::PlatformNotSupported)
         }
     }
@@ -170,6 +174,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = (hwnd, x, y);
             Err(DesktopError::PlatformNotSupported)
         }
     }
@@ -214,6 +219,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = (hwnd, width, height);
             Err(DesktopError::PlatformNotSupported)
         }
     }
@@ -302,6 +308,7 @@ impl WindowManager {
         }
         #[cfg(not(windows))]
         {
+            let _ = hwnd;
             Err(DesktopError::PlatformNotSupported)
         }
     }

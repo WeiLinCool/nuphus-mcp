@@ -31,6 +31,8 @@ async fn capture_fullscreen() -> Result<Frame> {
 
 /// Window capture - dispatch strategy by graphics backend
 async fn capture_window(target: &Target) -> Result<Frame> {
+    #[cfg(not(windows))]
+    let _ = target; // Target::Window only exists on Windows; fall through below.
     #[cfg(windows)]
     {
         if let Target::Window { hwnd, gfx_backend, .. } = target {

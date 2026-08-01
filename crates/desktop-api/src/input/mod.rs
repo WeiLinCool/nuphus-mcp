@@ -31,6 +31,11 @@ impl InputEngine {
         // Ensure the target is active
         self.ensure_active(target).await?;
 
+        // text is only used by the Windows SendInput path; keep the non-Windows
+        // build warning-free without renaming the shared parameter.
+        #[cfg(not(windows))]
+        let _ = text;
+
         match target {
             #[cfg(windows)]
             Target::Window { .. } | Target::Tui { .. } => {

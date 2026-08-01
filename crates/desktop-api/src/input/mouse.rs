@@ -5,13 +5,17 @@ use crate::core::*;
 #[cfg(not(windows))]
 use enigo::Mouse as _;
 
-/// Create a shared enigo instance (macOS / Linux)
+/// Create a fresh enigo instance (macOS / Linux).
+///
+/// macOS's enigo backend holds a `CGEventSource` that is not `Send`, so an
+/// instance can't live behind a shared `OnceLock<Mutex<_>>` (that would need
+/// `Enigo: Send`). Reconstructing per call sidesteps the `Send` bound and the
+/// `MutexGuard` temporary-lifetime traps entirely; input ops are low-frequency
+/// so the per-call init cost is negligible.
 #[cfg(not(windows))]
-fn enigo() -> std::sync::Mutex<enigo::Enigo> {
-    static INST: std::sync::OnceLock<std::sync::Mutex<enigo::Enigo>> = std::sync::OnceLock::new();
-    INST.get_or_init(|| std::sync::Mutex::new(
-        enigo::Enigo::new(&enigo::Settings::default()).expect("enigo init failed")
-    )).clone()
+fn enigo() -> Result<enigo::Enigo> {
+    enigo::Enigo::new(&enigo::Settings::default())
+        .map_err(|e| DesktopError::InputFailed(e.to_string()))
 }
 
 /// Move the mouse to the given coordinates
@@ -24,7 +28,7 @@ pub async fn move_to(x: i32, y: i32) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
+        enigo()?
             .move_mouse(x, y, enigo::Coordinate::Abs)
             .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
@@ -46,7 +50,7 @@ pub async fn position() -> Result<Point> {
     }
     #[cfg(not(windows))]
     {
-        let pos = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
+        let pos = enigo()?
             .location()
             .map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         Ok(Point { x: pos.0, y: pos.1 })
@@ -72,7 +76,7 @@ pub async fn click(x: i32, y: i32) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
+        enigo()?
             .button(enigo::Button::Left, enigo::Direction::Click)
             .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
@@ -97,7 +101,7 @@ pub async fn right_click(x: i32, y: i32) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?
+        enigo()?
             .button(enigo::Button::Right, enigo::Direction::Click)
             .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
@@ -150,7 +154,7 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let mut e = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?;
+        let mut e = enigo()?;
         e.button(enigo::Button::Left, enigo::Direction::Press).map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         drop(e);
         for i in 1..=20 {
@@ -160,7 +164,7 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
             let _ = move_to(x, y).await;
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let mut e = enigo().lock().map_err(|e| DesktopError::InputFailed(e.to_string()))?;
+        let mut e = enigo()?;
         e.button(enigo::Button::Left, enigo::Direction::Release).map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
     #[cfg(all(not(windows), not(any(target_os = "macos", target_os = "linux"))))]

@@ -88,6 +88,12 @@ jobs:
           [ "${{ matrix.name }}" = "linux-arm64" ] && CROSS=true
           if $CROSS; then
             sudo dpkg --add-architecture arm64
+            # Ubuntu 24.04's default deb822 source (ubuntu.sources) has no arch
+            # filter, so after --add-architecture apt tries to fetch binary-arm64
+            # indexes from archive/security (404 → update fails every retry).
+            # Restrict the default source to amd64 so arm64 indexes come only
+            # from the ports source below.
+            sudo sed -i '/^URIs:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
             # Ubuntu hosts arm64 packages on ports.ubuntu.com, not the default
             # archive/security mirrors — without these sources apt sees no arm64
             # packages at all (404 on binary-arm64 → "Unable to locate ...:arm64").
@@ -100,12 +106,15 @@ jobs:
             sudo apt-get update && break || { echo "apt-get update failed (attempt $i), retrying..."; sleep 10; }
           done
           if $CROSS; then
-            # libc6 is Multi-Arch: same — apt refuses a second arch at a
-            # different version, so every :arm64 dev lib fails on a missing
-            # libc6:arm64 ("held broken packages"). The runner's amd64 libc6
-            # (security-updated) is usually newer than the arm64 repo's, so pin
-            # arm64 libc6 to the host version before installing the dev libs.
-            sudo apt-get install -y libc6:arm64="$(dpkg-query -W -f='${Version}' libc6)"
+            # libc6 is Multi-Arch: same — both archs must sit at the SAME
+            # version, so every :arm64 dev lib fails on a version-skewed libc6
+            # ("held broken packages"). ports.ubuntu.com lags the archive/security
+            # mirrors: the runner's security-updated amd64 libc6 is usually NEWER
+            # than the arm64 one and the exact host version isn't in the arm64
+            # repo. Install the arm64 flavor unpinned and let apt downgrade the
+            # amd64 one to match (runner only hosts build tools, so a glibc
+            # downgrade is harmless).
+            sudo apt-get install -y --allow-downgrades libc6:arm64
           fi
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
