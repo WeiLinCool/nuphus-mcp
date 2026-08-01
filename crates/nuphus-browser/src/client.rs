@@ -1681,16 +1681,18 @@ impl BrowserClient {
         let page = self.get_page().await?;
         let page_guard = page.lock().await;
 
+        let before = page_guard
+            .url()
+            .await
+            .unwrap_or_default()
+            .unwrap_or_else(|| "about:blank".to_string());
+
         page_guard
             .evaluate("history.back()")
             .await
             .map_err(|e| BrowserError::Execution(e.to_string()))?;
 
-        // Use wait_for_navigation instead of sleep
-        page_guard
-            .wait_for_navigation()
-            .await
-            .map_err(|e| BrowserError::Navigation(e.to_string()))?;
+        Self::wait_for_url_change(&*page_guard, &before).await?;
 
         let url = page_guard
             .url()
@@ -1706,16 +1708,18 @@ impl BrowserClient {
         let page = self.get_page().await?;
         let page_guard = page.lock().await;
 
+        let before = page_guard
+            .url()
+            .await
+            .unwrap_or_default()
+            .unwrap_or_else(|| "about:blank".to_string());
+
         page_guard
             .evaluate("history.forward()")
             .await
             .map_err(|e| BrowserError::Execution(e.to_string()))?;
 
-        // Use wait_for_navigation instead of sleep
-        page_guard
-            .wait_for_navigation()
-            .await
-            .map_err(|e| BrowserError::Navigation(e.to_string()))?;
+        Self::wait_for_url_change(&*page_guard, &before).await?;
 
         let url = page_guard
             .url()
@@ -1724,6 +1728,29 @@ impl BrowserClient {
             .unwrap_or_else(|| "about:blank".to_string());
 
         Ok(format!("Navigated forward to: {}", url))
+    }
+
+    /// Wait until the page URL differs from `before`.
+    ///
+    /// `history.back()` / `history.forward()` are async JS: the `evaluate` returns before the
+    /// navigation completes, and BFCache / same-document history navigations fire no
+    /// `Page.loadEventFired` — so `wait_for_navigation()` can hang until the tool-level 30s
+    /// timeout even though the navigation already succeeded. Polling the URL is the only
+    /// reliable completion signal. Deadline is 20s (inside the 30s tool guard).
+    async fn wait_for_url_change(page: &Page, before: &str) -> Result<(), BrowserError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let now = page.url().await.unwrap_or_default().unwrap_or_default();
+            if now != before {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(BrowserError::Navigation(format!(
+                    "history navigation timed out (url unchanged: {before})"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 
     /// Wait for element to reach the given state.
