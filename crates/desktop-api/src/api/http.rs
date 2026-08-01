@@ -1,10 +1,10 @@
 //! HTTP server - axum, 6 core endpoints
 
 use axum::{
-    routing::{post, delete},
-    extract::{Path, State, Json},
-    response::{Json as AxumJson, IntoResponse, Response},
+    extract::{Json, Path, State},
     http::StatusCode,
+    response::{IntoResponse, Json as AxumJson, Response},
+    routing::{delete, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::api::{Action, UnifiedApi};
 use crate::core::*;
-use crate::api::{UnifiedApi, Action};
 use crate::vision::{PerceiveWhat, Query};
 
 /// Application state
@@ -31,8 +31,12 @@ impl IntoResponse for DesktopError {
             DesktopError::CaptureFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             DesktopError::OcrFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
             DesktopError::LocateFailed(_) => (StatusCode::NOT_FOUND, self.to_string()),
-            DesktopError::ActivationFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
-            DesktopError::AllStrategiesFailed => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
+            DesktopError::ActivationFailed(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
+            DesktopError::AllStrategiesFailed => {
+                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
             DesktopError::SessionNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             DesktopError::PlatformNotSupported => (StatusCode::NOT_IMPLEMENTED, self.to_string()),
             DesktopError::Other(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
@@ -97,9 +101,18 @@ pub struct FindRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "by")]
 pub enum QueryRequest {
-    Image { image_base64: String },
-    Text { query: String },
-    Color { r: u8, g: u8, b: u8, tolerance: Option<u8> },
+    Image {
+        image_base64: String,
+    },
+    Text {
+        query: String,
+    },
+    Color {
+        r: u8,
+        g: u8,
+        b: u8,
+        tolerance: Option<u8>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,9 +171,7 @@ async fn session_see(
     Json(req): Json<SeeRequest>,
 ) -> Result<AxumJson<serde_json::Value>> {
     let sessions = state.sessions.read().await;
-    let session = sessions
-        .get(id)
-        .ok_or(DesktopError::SessionNotFound(id))?;
+    let session = sessions.get(id).ok_or(DesktopError::SessionNotFound(id))?;
 
     let what = match req.what.as_str() {
         "text" => PerceiveWhat::Text,
@@ -187,13 +198,12 @@ async fn session_find(
     Json(req): Json<FindRequest>,
 ) -> Result<AxumJson<serde_json::Value>> {
     let sessions = state.sessions.read().await;
-    let session = sessions
-        .get(id)
-        .ok_or(DesktopError::SessionNotFound(id))?;
+    let session = sessions.get(id).ok_or(DesktopError::SessionNotFound(id))?;
 
     let query = match req.query {
         QueryRequest::Image { image_base64 } => {
-            let bytes = STANDARD.decode(image_base64)
+            let bytes = STANDARD
+                .decode(image_base64)
                 .map_err(|e| DesktopError::Other(anyhow::anyhow!("base64 decode: {}", e)))?;
             Query::Image(bytes)
         }
@@ -222,9 +232,7 @@ async fn session_do(
     Json(req): Json<DoRequest>,
 ) -> Result<AxumJson<serde_json::Value>> {
     let sessions = state.sessions.read().await;
-    let session = sessions
-        .get(id)
-        .ok_or(DesktopError::SessionNotFound(id))?;
+    let session = sessions.get(id).ok_or(DesktopError::SessionNotFound(id))?;
 
     let action = match req.action.as_str() {
         "click" => Action::Click {
@@ -251,7 +259,12 @@ async fn session_do(
         "hotkey" => Action::Hotkey {
             keys: req.keys.unwrap_or_default(),
         },
-        _ => return Err(DesktopError::Other(anyhow::anyhow!("unknown action: {}", req.action))),
+        _ => {
+            return Err(DesktopError::Other(anyhow::anyhow!(
+                "unknown action: {}",
+                req.action
+            )))
+        }
     };
 
     let result = state.api.do_(&session, action).await?;
@@ -267,9 +280,7 @@ async fn session_say(
     Json(req): Json<SayRequest>,
 ) -> Result<AxumJson<serde_json::Value>> {
     let sessions = state.sessions.read().await;
-    let session = sessions
-        .get(id)
-        .ok_or(DesktopError::SessionNotFound(id))?;
+    let session = sessions.get(id).ok_or(DesktopError::SessionNotFound(id))?;
 
     let result = state.api.say(&session, &req.text).await?;
 
@@ -296,4 +307,4 @@ async fn health() -> AxumJson<serde_json::Value> {
 }
 
 // base64 decoding (simple implementation)
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};

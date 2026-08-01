@@ -1,12 +1,12 @@
 //! Core type system - Session, Target, Frame, Scope, AppKind
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "http-server")]
 use std::sync::Arc;
 #[cfg(feature = "http-server")]
 use tokio::sync::RwLock;
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 // ─────────────────────────────── application types ───────────────────────────────
 
@@ -38,7 +38,10 @@ pub enum TargetSpec {
     /// Browser URL
     Url(String),
     /// Playwright-connected page
-    PlaywrightPage { ws_url: String, token: Option<String> },
+    PlaywrightPage {
+        ws_url: String,
+        token: Option<String>,
+    },
 }
 
 // ─────────────────────────────── sessions ───────────────────────────────
@@ -90,15 +93,9 @@ pub enum Target {
         gfx_backend: GfxBackend,
     },
     /// Browser page
-    Browser {
-        page_id: String,
-        url: String,
-    },
+    Browser { page_id: String, url: String },
     /// Terminal
-    Tui {
-        hwnd: isize,
-        title: String,
-    },
+    Tui { hwnd: isize, title: String },
 }
 
 impl Target {
@@ -165,7 +162,7 @@ impl Default for Viewport {
 #[derive(Debug)]
 pub struct Frame {
     pub id: Uuid,
-    pub pixels: Vec<u8>,      // RGBA
+    pub pixels: Vec<u8>, // RGBA
     pub width: u32,
     pub height: u32,
     pub scope: Scope,
@@ -212,7 +209,12 @@ impl Frame {
             pixels: cropped,
             width: w,
             height: h,
-            scope: Scope::Element { x: x as i32, y: y as i32, w, h },
+            scope: Scope::Element {
+                x: x as i32,
+                y: y as i32,
+                w,
+                h,
+            },
             timestamp: Utc::now(),
             source: FrameSource::RegionCrop,
         })
@@ -252,7 +254,6 @@ pub enum Scope {
     /// Area around a point - most economical
     Point { x: i32, y: i32, radius: u32 },
 }
-
 
 // ─────────────────────────────── colors ───────────────────────────────
 

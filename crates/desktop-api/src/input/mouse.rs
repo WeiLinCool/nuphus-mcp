@@ -23,7 +23,9 @@ pub async fn move_to(x: i32, y: i32) -> Result<()> {
     #[cfg(windows)]
     {
         use ::windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
-        unsafe { let _ = SetCursorPos(x, y); }
+        unsafe {
+            let _ = SetCursorPos(x, y);
+        }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -42,10 +44,12 @@ pub async fn move_to(x: i32, y: i32) -> Result<()> {
 pub async fn position() -> Result<Point> {
     #[cfg(windows)]
     {
-        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         use ::windows::Win32::Foundation::POINT;
+        use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut pt = POINT::default();
-        unsafe { let _ = GetCursorPos(&mut pt); }
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
         Ok(Point { x: pt.x, y: pt.y })
     }
     #[cfg(not(windows))]
@@ -69,9 +73,13 @@ pub async fn click(x: i32, y: i32) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         };
-        unsafe { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        unsafe { mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -94,9 +102,13 @@ pub async fn right_click(x: i32, y: i32) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             mouse_event, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
         };
-        unsafe { mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        unsafe { mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+        }
         Ok(())
     }
     #[cfg(not(windows))]
@@ -120,7 +132,9 @@ pub async fn scroll(direction: &str, amount: i32) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_WHEEL};
         let delta: i32 = if direction == "up" { 120 } else { -120 };
         for _ in 0..amount.max(0) {
-            unsafe { mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0); }
+            unsafe {
+                mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0);
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         Ok(())
@@ -140,7 +154,9 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
         };
-        unsafe { mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        }
         let steps = 20;
         for i in 1..=steps {
             let t = i as f32 / steps as f32;
@@ -149,13 +165,16 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
             let _ = move_to(x, y).await;
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        unsafe { mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); }
+        unsafe {
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        }
         Ok(())
     }
     #[cfg(not(windows))]
     {
         let mut e = enigo()?;
-        e.button(enigo::Button::Left, enigo::Direction::Press).map_err(|e| DesktopError::InputFailed(e.to_string()))?;
+        e.button(enigo::Button::Left, enigo::Direction::Press)
+            .map_err(|e| DesktopError::InputFailed(e.to_string()))?;
         drop(e);
         for i in 1..=20 {
             let t = i as f32 / 20.0;
@@ -165,7 +184,8 @@ pub async fn drag(start: Point, end: Point) -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let mut e = enigo()?;
-        e.button(enigo::Button::Left, enigo::Direction::Release).map_err(|e| DesktopError::InputFailed(e.to_string()))
+        e.button(enigo::Button::Left, enigo::Direction::Release)
+            .map_err(|e| DesktopError::InputFailed(e.to_string()))
     }
     #[cfg(all(not(windows), not(any(target_os = "macos", target_os = "linux"))))]
     {

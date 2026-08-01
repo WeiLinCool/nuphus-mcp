@@ -5,13 +5,13 @@
 #[cfg(feature = "http-server")]
 mod http_server {
     use tokio::net::TcpListener;
-    
+
     pub async fn run() -> anyhow::Result<()> {
         let app = desktop_api::api::http::create_router();
-        
+
         let listener = TcpListener::bind("127.0.0.1:8888").await?;
         println!("DesktopAPI v2.0 started at http://localhost:8888");
-        
+
         axum::serve(listener, app).await?;
         Ok(())
     }
@@ -30,8 +30,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("desktop_api=debug")
         .init();
-    
+
     http_server::run().await?;
-    
+
     Ok(())
 }

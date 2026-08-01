@@ -43,11 +43,7 @@ impl OcrEngine {
     }
 
     /// Region recognition - only recognizes the specified region
-    pub async fn recognize_region(
-        &self,
-        _frame: &Frame,
-        _region: Rect,
-    ) -> Result<Vec<TextBlock>> {
+    pub async fn recognize_region(&self, _frame: &Frame, _region: Rect) -> Result<Vec<TextBlock>> {
         Ok(vec![])
     }
 }

@@ -45,8 +45,7 @@ pub fn load(domain_filter: Option<&str>) -> Result<Vec<CookieData>, String> {
     match LOADER.get() {
         Some(f) => f(domain_filter),
         None => Err(
-            "no cookie source registered — BrowserClient::import_cookies unavailable"
-                .to_string(),
+            "no cookie source registered — BrowserClient::import_cookies unavailable".to_string(),
         ),
     }
 }

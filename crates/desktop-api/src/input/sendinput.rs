@@ -8,14 +8,14 @@
 
 use crate::core::*;
 
+use ::windows::Win32::Foundation::HWND;
+use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, KEYBDINPUT, INPUT_TYPE, KEYBD_EVENT_FLAGS, VIRTUAL_KEY, SendInput,
+    SendInput, INPUT, INPUT_0, INPUT_TYPE, KEYBDINPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    SetForegroundWindow, GetWindowThreadProcessId, ShowWindow, SW_RESTORE, IsIconic,
+    GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
 };
-use ::windows::Win32::System::Threading::{GetCurrentThreadId, AttachThreadInput};
-use ::windows::Win32::Foundation::HWND;
 
 const INPUT_KEYBOARD: u32 = 1;
 const KEYEVENTF_UNICODE: u32 = 0x0004;
@@ -58,15 +58,21 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
     #[cfg(windows)]
     {
         // ── 1. Focus preparation ──
-        let target = prepare_focus(session.target_hwnd, session.force_activate, session.verify_foreground)?;
+        let target = prepare_focus(
+            session.target_hwnd,
+            session.force_activate,
+            session.verify_foreground,
+        )?;
         if session.verify_foreground && !target.verified {
             return Err(DesktopError::InputFailed(
-                "Target window is not in foreground, input rejected".to_string()
+                "Target window is not in foreground, input rejected".to_string(),
             ));
         }
         // RAII guard: detaches the thread-input attachment on ANY exit (success or
         // error), so a mid-stream SendInput failure can't leak the attachment.
-        let _attach_guard = ThreadInputGuard { target_tid: target.attached_hwnd };
+        let _attach_guard = ThreadInputGuard {
+            target_tid: target.attached_hwnd,
+        };
 
         // ── 2. Encoding conversion: UTF-8 → UTF-16 codepoint sequence ──
         let codepoints = encode_utf16_codepoints(text);
@@ -121,19 +127,25 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
 
 /// Convenience function: send to the specified window
 pub fn input_to_window(text: &str, hwnd: isize, press_enter: bool) -> Result<usize> {
-    nuphus_input(text, &InputSession {
-        target_hwnd: Some(hwnd),
-        press_enter,
-        ..Default::default()
-    })
+    nuphus_input(
+        text,
+        &InputSession {
+            target_hwnd: Some(hwnd),
+            press_enter,
+            ..Default::default()
+        },
+    )
 }
 
 /// Convenience function: send to the current focus window
 pub fn input_to_focus(text: &str, press_enter: bool) -> Result<usize> {
-    nuphus_input(text, &InputSession {
-        press_enter,
-        ..Default::default()
-    })
+    nuphus_input(
+        text,
+        &InputSession {
+            press_enter,
+            ..Default::default()
+        },
+    )
 }
 
 // ============================================================================
@@ -233,12 +245,12 @@ fn make_unicode_inputs(ch: u16) -> [INPUT; 2] {
             r#type: INPUT_TYPE(INPUT_KEYBOARD),
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(0),           // must be 0 in KEYEVENTF_UNICODE mode
+                    wVk: VIRTUAL_KEY(0), // must be 0 in KEYEVENTF_UNICODE mode
                     wScan: ch,
                     dwFlags: KEYBD_EVENT_FLAGS(KEYEVENTF_UNICODE),
                     time: 0,
                     dwExtraInfo: 0,
-                }
+                },
             },
         },
         // KeyUp
@@ -246,12 +258,12 @@ fn make_unicode_inputs(ch: u16) -> [INPUT; 2] {
             r#type: INPUT_TYPE(INPUT_KEYBOARD),
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(0),           // must be 0 in KEYEVENTF_UNICODE mode
+                    wVk: VIRTUAL_KEY(0), // must be 0 in KEYEVENTF_UNICODE mode
                     wScan: ch,
                     dwFlags: KEYBD_EVENT_FLAGS(KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
                     time: 0,
                     dwExtraInfo: 0,
-                }
+                },
             },
         },
     ]
@@ -271,7 +283,7 @@ fn make_enter_inputs() -> [INPUT; 2] {
                     dwFlags: KEYBD_EVENT_FLAGS(0),
                     time: 0,
                     dwExtraInfo: 0,
-                }
+                },
             },
         },
         // KeyUp
@@ -284,7 +296,7 @@ fn make_enter_inputs() -> [INPUT; 2] {
                     dwFlags: KEYBD_EVENT_FLAGS(KEYEVENTF_KEYUP),
                     time: 0,
                     dwExtraInfo: 0,
-                }
+                },
             },
         },
     ]
@@ -301,8 +313,11 @@ pub fn send_unicode_text(text: &str) -> Result<usize> {
 
 /// Send character by character with an interval (legacy interface, prefer nuphus_input)
 pub fn send_unicode_chars(text: &str, interval_ms: u64) -> Result<usize> {
-    nuphus_input(text, &InputSession {
-        char_delay_ms: interval_ms,
-        ..Default::default()
-    })
+    nuphus_input(
+        text,
+        &InputSession {
+            char_delay_ms: interval_ms,
+            ..Default::default()
+        },
+    )
 }

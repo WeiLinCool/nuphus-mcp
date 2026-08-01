@@ -165,7 +165,9 @@ pub fn perceive_image(path: &str) -> Result<PerceiveOutput, String> {
             timestamp: chrono::Utc::now(),
             source: FrameSource::Screenshot,
         };
-        YoloDetector::new().detect(&frame).map_err(|e| format!("YOLO detection failed: {e}"))?
+        YoloDetector::new()
+            .detect(&frame)
+            .map_err(|e| format!("YOLO detection failed: {e}"))?
     } else {
         vec![]
     };
@@ -361,7 +363,13 @@ mod tests {
 
     #[test]
     fn test_merge_input_keyword() {
-        let blocks = vec![block("\u{8BF7}\u{8F93}\u{5165}\u{5185}\u{5BB9}", 45, 45, 50, 30)];
+        let blocks = vec![block(
+            "\u{8BF7}\u{8F93}\u{5165}\u{5185}\u{5BB9}",
+            45,
+            45,
+            50,
+            30,
+        )];
         let elements = vec![elem(40, 40, 60, 35)];
         let result = merge(&blocks, &elements);
         assert_eq!(result[0].kind, ElementKind::Input);
@@ -388,6 +396,22 @@ mod tests {
 
     #[test]
     fn test_rect_iou_non_overlapping_is_zero() {
-        assert_eq!(rect_iou(&Rect { x: 0, y: 0, w: 10, h: 10 }, &Rect { x: 100, y: 100, w: 10, h: 10 }), 0.0);
+        assert_eq!(
+            rect_iou(
+                &Rect {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10
+                },
+                &Rect {
+                    x: 100,
+                    y: 100,
+                    w: 10,
+                    h: 10
+                }
+            ),
+            0.0
+        );
     }
 }

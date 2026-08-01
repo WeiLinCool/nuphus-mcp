@@ -6,17 +6,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub mod capture;
+pub mod locate;
 pub mod models;
 pub mod ocr;
-pub mod locate;
 pub mod paddle_ocr;
 pub mod perceive;
 pub mod yolo;
 
 pub use capture::*;
-pub use ocr::*;
 pub use locate::*;
 pub use models::*;
+pub use ocr::*;
 pub use paddle_ocr::*;
 pub use perceive::*;
 pub use yolo::*;
@@ -79,19 +79,11 @@ impl VisionEngine {
     }
 
     /// Find - image/text/color
-    pub async fn find(
-        &self,
-        frame: &Frame,
-        query: &Query,
-    ) -> Result<FindResult> {
+    pub async fn find(&self, frame: &Frame, query: &Query) -> Result<FindResult> {
         self.locate.find_with_fallback(frame, query).await
     }
 
-    pub async fn capture(
-        &self,
-        target: &Target,
-        scope: Scope,
-    ) -> Result<Frame> {
+    pub async fn capture(&self, target: &Target, scope: Scope) -> Result<Frame> {
         capture::capture(target, scope).await
     }
 }
@@ -155,15 +147,19 @@ pub struct ColorSpot {
 /// Per-channel RGB color tolerance (DaMo-style "203040" = dr=32, dg=48, db=64)
 #[derive(Debug, Clone, Copy)]
 pub struct DeltaColor {
-    pub dr: u8,  // max deviation on the R channel
-    pub dg: u8,  // max deviation on the G channel
-    pub db: u8,  // max deviation on the B channel
+    pub dr: u8, // max deviation on the R channel
+    pub dg: u8, // max deviation on the G channel
+    pub db: u8, // max deviation on the B channel
 }
 
 impl DeltaColor {
     /// Construct from a single tolerance value (same value for all three channels)
     pub fn from_tolerance(tolerance: u8) -> Self {
-        Self { dr: tolerance, dg: tolerance, db: tolerance }
+        Self {
+            dr: tolerance,
+            dg: tolerance,
+            db: tolerance,
+        }
     }
 
     /// Construct from an RGB string, e.g. "203040" → dr=32, dg=48, db=64
@@ -188,8 +184,7 @@ impl DeltaColor {
 }
 
 /// Scan direction
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScanDirection {
     /// Top-left → bottom-right (default)
     #[default]
@@ -202,7 +197,6 @@ pub enum ScanDirection {
     RightBottom,
 }
 
-
 /// Find query
 #[derive(Debug, Clone)]
 pub enum Query {
@@ -213,7 +207,11 @@ pub enum Query {
     /// Find color - color matching
     Color { target: Color, tolerance: u8 },
     /// Combined: find text first, then verify color
-    TextThenColor { text: String, color: Color, tolerance: u8 },
+    TextThenColor {
+        text: String,
+        color: Color,
+        tolerance: u8,
+    },
     /// Combined: find image first, then verify text
     ImageThenText { image: Vec<u8>, text: String },
 }

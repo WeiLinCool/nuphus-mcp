@@ -2,15 +2,15 @@
 
 use crate::core::*;
 
+pub mod keyboard;
+pub mod mouse;
 #[cfg(windows)]
 pub mod sendinput;
-pub mod mouse;
-pub mod keyboard;
 
+pub use keyboard::*;
+pub use mouse::*;
 #[cfg(windows)]
 pub use sendinput::*;
-pub use mouse::*;
-pub use keyboard::*;
 
 /// Input engine
 pub struct InputEngine;
@@ -96,8 +96,8 @@ impl InputEngine {
 
         #[cfg(windows)]
         {
-            use ::windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
             use ::windows::Win32::Foundation::HWND;
+            use ::windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
             use std::time::Duration;
             use tokio::time::sleep;
 
@@ -135,11 +135,11 @@ impl InputEngine {
 
     #[cfg(windows)]
     async fn force_foreground(&self, hwnd: isize) -> Result<()> {
+        use ::windows::Win32::Foundation::HWND;
+        use ::windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
         use ::windows::Win32::UI::WindowsAndMessaging::{
             GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, SW_RESTORE,
         };
-        use ::windows::Win32::System::Threading::{GetCurrentThreadId, AttachThreadInput};
-        use ::windows::Win32::Foundation::HWND;
         use std::time::Duration;
         use tokio::time::sleep;
 

@@ -40,7 +40,12 @@ impl DemoClient {
     }
 
     /// Send a single-line JSON request and read the single-line response.
-    fn call(&mut self, id: u64, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn call(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -116,7 +121,11 @@ fn main() -> Result<(), String> {
     let binary = std::env::var("DEMO_MCP_BIN").unwrap_or_else(|_| {
         let exe = std::env::current_exe().expect("current exe");
         let exe_dir = exe.parent().expect("exe parent");
-        let name = if cfg!(windows) { "nuphus-mcp.exe" } else { "nuphus-mcp" };
+        let name = if cfg!(windows) {
+            "nuphus-mcp.exe"
+        } else {
+            "nuphus-mcp"
+        };
         // Candidates: exe dir → exe parent dir (examples → debug)
         let mut candidates: Vec<std::path::PathBuf> = vec![exe_dir.join(name)];
         if let Some(parent) = exe_dir.parent() {
@@ -161,16 +170,22 @@ fn main() -> Result<(), String> {
 
     // 2. tools/list
     let resp = client.call(1, "tools/list", serde_json::json!({}))?;
-    let tools = resp["result"]["tools"].as_array().cloned().unwrap_or_default();
-    let desktop_count = tools.iter().filter(|t| {
-        t["name"].as_str().unwrap_or("").starts_with("desktop_")
-    }).count();
-    let browser_count = tools.iter().filter(|t| {
-        t["name"].as_str().unwrap_or("").starts_with("browser_")
-    }).count();
-    let destructive = tools.iter().filter(|t| {
-        t["annotations"]["destructiveHint"] == serde_json::json!(true)
-    }).count();
+    let tools = resp["result"]["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let desktop_count = tools
+        .iter()
+        .filter(|t| t["name"].as_str().unwrap_or("").starts_with("desktop_"))
+        .count();
+    let browser_count = tools
+        .iter()
+        .filter(|t| t["name"].as_str().unwrap_or("").starts_with("browser_"))
+        .count();
+    let destructive = tools
+        .iter()
+        .filter(|t| t["annotations"]["destructiveHint"] == serde_json::json!(true))
+        .count();
     println!(
         "[2] tools/list OK → {} tools (desktop {} + browser {}), {} marked destructive",
         tools.len(),
@@ -180,10 +195,14 @@ fn main() -> Result<(), String> {
     );
 
     // 3. tools/call: read desktop screen resolution (real execution, via desktop-api)
-    let resp = client.call(2, "tools/call", serde_json::json!({
-        "name": "desktop_screen_size",
-        "arguments": {}
-    }))?;
+    let resp = client.call(
+        2,
+        "tools/call",
+        serde_json::json!({
+            "name": "desktop_screen_size",
+            "arguments": {}
+        }),
+    )?;
     println!("[3] desktop_screen_size → {}", text_of(&resp));
 
     // 4. tools/call: harmless browser operation (data URL page, avoids network)
@@ -192,19 +211,33 @@ fn main() -> Result<(), String> {
         "arguments": { "url": "data:text/html,<html><body><h1>nuphus-mcp%20demo</h1></body></html>" }
     }))?;
     let nav = text_of(&resp);
-    let first_line = nav.lines().next().unwrap_or("").chars().take(80).collect::<String>();
+    let first_line = nav
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect::<String>();
     println!("[4] browser_navigate → {}", first_line);
 
-    let resp = client.call(4, "tools/call", serde_json::json!({
-        "name": "browser_evaluate",
-        "arguments": { "script": "document.querySelector('h1').textContent" }
-    }))?;
+    let resp = client.call(
+        4,
+        "tools/call",
+        serde_json::json!({
+            "name": "browser_evaluate",
+            "arguments": { "script": "document.querySelector('h1').textContent" }
+        }),
+    )?;
     println!("[5] browser_evaluate → {}", text_of(&resp));
 
-    let resp = client.call(5, "tools/call", serde_json::json!({
-        "name": "browser_close",
-        "arguments": {}
-    }))?;
+    let resp = client.call(
+        5,
+        "tools/call",
+        serde_json::json!({
+            "name": "browser_close",
+            "arguments": {}
+        }),
+    )?;
     println!("[6] browser_close → {}", text_of(&resp));
 
     println!("\n== demo done ==");

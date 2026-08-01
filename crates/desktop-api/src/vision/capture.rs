@@ -25,7 +25,9 @@ async fn capture_fullscreen() -> Result<Frame> {
         .next()
         .ok_or_else(|| DesktopError::CaptureFailed("no monitor found".to_string()))?;
 
-    let image = primary.capture_image().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
+    let image = primary
+        .capture_image()
+        .map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
     convert_to_frame(image, Scope::Fullscreen, FrameSource::Screenshot)
 }
 
@@ -35,7 +37,10 @@ async fn capture_window(target: &Target) -> Result<Frame> {
     let _ = target; // Target::Window only exists on Windows; fall through below.
     #[cfg(windows)]
     {
-        if let Target::Window { hwnd, gfx_backend, .. } = target {
+        if let Target::Window {
+            hwnd, gfx_backend, ..
+        } = target
+        {
             return capture_window_by_backend(*hwnd, *gfx_backend).await;
         }
     }
@@ -48,9 +53,7 @@ async fn capture_window(target: &Target) -> Result<Frame> {
 /// Dispatch the capture strategy by graphics backend
 async fn capture_window_by_backend(hwnd: isize, gfx: GfxBackend) -> Result<Frame> {
     match gfx {
-        GfxBackend::Gdi => {
-            capture_window_gdi(hwnd).await
-        }
+        GfxBackend::Gdi => capture_window_gdi(hwnd).await,
         GfxBackend::DirectX | GfxBackend::Unknown => {
             // Try GDI first, fall back to full-screen + crop on failure
             match capture_window_gdi(hwnd).await {
@@ -73,7 +76,9 @@ async fn capture_window_gdi(hwnd: isize) -> Result<Frame> {
         .find(|w| w.id().ok().map(|id| id as isize) == Some(hwnd))
         .ok_or_else(|| DesktopError::CaptureFailed(format!("window {} not found", hwnd)))?;
 
-    let image = win.capture_image().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
+    let image = win
+        .capture_image()
+        .map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
     convert_to_frame(image, Scope::Window, FrameSource::WindowCapture)
 }
 
@@ -83,8 +88,8 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
 
     #[cfg(windows)]
     {
+        use ::windows::Win32::Foundation::{HWND, RECT};
         use ::windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-        use ::windows::Win32::Foundation::{RECT, HWND};
 
         let mut rect = RECT::default();
         let _ = unsafe { GetWindowRect(HWND(hwnd), &mut rect) };
@@ -94,7 +99,8 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
         let w = (rect.right - rect.left) as u32;
         let h = (rect.bottom - rect.top) as u32;
 
-        frame.crop(x, y, w, h)
+        frame
+            .crop(x, y, w, h)
             .ok_or_else(|| DesktopError::CaptureFailed("fullscreen crop failed".to_string()))
     }
 
@@ -102,7 +108,8 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
     {
         // macOS/Linux: use xcap to get the window position for cropping
         let windows = XcapWindow::all().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
-        let win = windows.into_iter()
+        let win = windows
+            .into_iter()
             .find(|w| w.id().ok().map(|id| id as isize) == Some(hwnd))
             .ok_or_else(|| DesktopError::CaptureFailed(format!("window {} not found", hwnd)))?;
 
@@ -113,7 +120,8 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
         let w = win.width().unwrap_or(0);
         let h = win.height().unwrap_or(0);
 
-        frame.crop(x, y, w, h)
+        frame
+            .crop(x, y, w, h)
             .ok_or_else(|| DesktopError::CaptureFailed("fullscreen crop failed".to_string()))
     }
 }
@@ -122,9 +130,9 @@ async fn capture_fullscreen_and_crop(hwnd: isize) -> Result<Frame> {
 async fn capture_client_area(target: &Target) -> Result<Frame> {
     #[cfg(windows)]
     {
-        use ::windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+        use ::windows::Win32::Foundation::{HWND, POINT, RECT};
         use ::windows::Win32::Graphics::Gdi::ClientToScreen;
-        use ::windows::Win32::Foundation::{RECT, POINT, HWND};
+        use ::windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
         if let Target::Window { hwnd, .. } = target {
             let hwnd = HWND(*hwnd);
@@ -157,7 +165,9 @@ async fn capture_region(x: i32, y: i32, w: u32, h: u32) -> Result<Frame> {
         .next()
         .ok_or_else(|| DesktopError::CaptureFailed("no monitor".to_string()))?;
 
-    let image = primary.capture_image().map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
+    let image = primary
+        .capture_image()
+        .map_err(|e| DesktopError::CaptureFailed(e.to_string()))?;
     let frame = convert_to_frame(image, Scope::Fullscreen, FrameSource::Screenshot)?;
 
     let x = x.max(0) as u32;
@@ -176,7 +186,8 @@ async fn capture_region(x: i32, y: i32, w: u32, h: u32) -> Result<Frame> {
     let w = w.min(frame.width - x);
     let h = h.min(frame.height - y);
 
-    frame.crop(x, y, w, h)
+    frame
+        .crop(x, y, w, h)
         .ok_or_else(|| DesktopError::CaptureFailed("crop failed".to_string()))
 }
 

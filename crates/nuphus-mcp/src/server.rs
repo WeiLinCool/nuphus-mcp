@@ -153,7 +153,8 @@ impl McpServer {
                     "inputSchema": t.input_schema,
                 });
                 // Security annotations (MCP spec annotations): destructiveHint for write tools / readOnlyHint for read tools
-                if let Some(annotations) = crate::security::annotations_for(t.name, &t.input_schema) {
+                if let Some(annotations) = crate::security::annotations_for(t.name, &t.input_schema)
+                {
                     tool["annotations"] = annotations;
                 }
                 tool
@@ -213,7 +214,10 @@ mod tests {
         let err = v.get("error").expect("response must have error");
         (
             err.get("code").and_then(Value::as_i64).unwrap_or(0) as i32,
-            err.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            err.get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         )
     }
 
@@ -282,10 +286,20 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert!(v.get("error").is_none(), "tools/list must succeed: {}", resp);
+        assert!(
+            v.get("error").is_none(),
+            "tools/list must succeed: {}",
+            resp
+        );
 
-        let tools = v["result"]["tools"].as_array().expect("tools must be array");
-        assert!(tools.len() >= 10, "expected >=10 tools, got {}", tools.len());
+        let tools = v["result"]["tools"]
+            .as_array()
+            .expect("tools must be array");
+        assert!(
+            tools.len() >= 10,
+            "expected >=10 tools, got {}",
+            tools.len()
+        );
 
         let names: Vec<&str> = tools
             .iter()
@@ -331,7 +345,10 @@ mod tests {
                 t.get("name").and_then(Value::as_str).unwrap_or("?")
             );
             assert!(
-                schema.get("properties").map(Value::is_object).unwrap_or(false),
+                schema
+                    .get("properties")
+                    .map(Value::is_object)
+                    .unwrap_or(false),
                 "inputSchema must have properties for {}",
                 t.get("name").and_then(Value::as_str).unwrap_or("?")
             );
@@ -359,7 +376,11 @@ mod tests {
             .expect("response expected");
         let (code, msg) = error_of(&resp);
         assert_eq!(code, codes::INVALID_PARAMS);
-        assert!(msg.contains("no_such_tool"), "msg should name the tool: {}", msg);
+        assert!(
+            msg.contains("no_such_tool"),
+            "msg should name the tool: {}",
+            msg
+        );
     }
 
     #[tokio::test]
@@ -391,7 +412,11 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert!(v.get("error").is_none(), "screen_size must succeed: {}", resp);
+        assert!(
+            v.get("error").is_none(),
+            "screen_size must succeed: {}",
+            resp
+        );
         let content = v["result"]["content"][0].clone();
         assert_eq!(content["type"], "text");
         let text = content["text"].as_str().expect("text must be string");
@@ -479,10 +504,17 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert!(v.get("error").is_none(), "rejection is not a JSON-RPC error");
+        assert!(
+            v.get("error").is_none(),
+            "rejection is not a JSON-RPC error"
+        );
         assert_eq!(v["result"]["isError"], true, "must be isError: {}", resp);
         let msg = v["result"]["content"][0]["text"].as_str().unwrap_or("");
-        assert!(msg.contains("confirm"), "message must mention confirm: {}", msg);
+        assert!(
+            msg.contains("confirm"),
+            "message must mention confirm: {}",
+            msg
+        );
 
         // With confirm → allowed to execute (isError defaults to false, per MCP spec)
         let resp = server
@@ -492,9 +524,15 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        let is_err = v["result"].get("isError").and_then(Value::as_bool).unwrap_or(false);
+        let is_err = v["result"]
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         assert!(!is_err, "confirm=true must execute: {}", resp);
-        assert!(v["result"]["content"][0]["text"].as_str().unwrap_or("").contains("written_chars"));
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("written_chars"));
 
         // Read operations are not subject to confirm
         let resp = server
@@ -504,7 +542,10 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        let is_err = v["result"].get("isError").and_then(Value::as_bool).unwrap_or(false);
+        let is_err = v["result"]
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         assert!(!is_err);
     }
 
@@ -522,9 +563,15 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        let is_err = v["result"].get("isError").and_then(Value::as_bool).unwrap_or(false);
+        let is_err = v["result"]
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         assert!(!is_err, "lenient mode allows write: {}", resp);
-        assert!(v["result"]["content"][0]["text"].as_str().unwrap_or("").contains("written_chars"));
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("written_chars"));
     }
 
     #[tokio::test]
@@ -536,12 +583,20 @@ mod tests {
 
         let resp = server
             .handle_line(
-                r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/..\\..\\Windows\\evil.bmp"}}}"#,
+                // Forward-slash traversal works on every platform: both Windows and
+                // POSIX Path parsers treat '/' as a separator and see the '..' parent
+                // component, so it is rejected (a backslash-only path would be a plain
+                // filename on POSIX, where '\' is not a separator).
+                r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/../evil.bmp"}}}"#,
             )
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert_eq!(v["result"]["isError"], json!(true), "path traversal must be rejected");
+        assert_eq!(
+            v["result"]["isError"],
+            json!(true),
+            "path traversal must be rejected"
+        );
         let msg = v["result"]["content"][0]["text"].as_str().unwrap_or("");
         assert!(
             msg.contains("..") || msg.contains("path"),
@@ -562,15 +617,13 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        let tools = v["result"]["tools"].as_array().expect("tools must be array");
+        let tools = v["result"]["tools"]
+            .as_array()
+            .expect("tools must be array");
 
         let by_name: std::collections::HashMap<&str, &Value> = tools
             .iter()
-            .filter_map(|t| {
-                t.get("name")
-                    .and_then(Value::as_str)
-                    .map(|n| (n, t))
-            })
+            .filter_map(|t| t.get("name").and_then(Value::as_str).map(|n| (n, t)))
             .collect();
 
         for required in [
@@ -585,8 +638,16 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing tool: {}", required));
             // Description must be English (non-empty + no Chinese comment chars; here we only assert non-empty)
             let desc = t.get("description").and_then(Value::as_str).unwrap_or("");
-            assert!(!desc.is_empty(), "description must be non-empty for {}", required);
-            assert!(t.get("inputSchema").is_some(), "inputSchema required for {}", required);
+            assert!(
+                !desc.is_empty(),
+                "description must be non-empty for {}",
+                required
+            );
+            assert!(
+                t.get("inputSchema").is_some(),
+                "inputSchema required for {}",
+                required
+            );
         }
     }
 
@@ -604,7 +665,11 @@ mod tests {
         .iter()
         .map(|k| (k.to_string(), std::env::var(k).ok()))
         .collect();
-        for k in ["NUPHUS_MCP_VISION_API_KEY", "NUPHUS_MCP_VISION_BASE_URL", "NUPHUS_MCP_VISION_MODEL"] {
+        for k in [
+            "NUPHUS_MCP_VISION_API_KEY",
+            "NUPHUS_MCP_VISION_BASE_URL",
+            "NUPHUS_MCP_VISION_MODEL",
+        ] {
             std::env::remove_var(k);
         }
 
@@ -620,7 +685,12 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert_eq!(v["result"]["isError"], json!(true), "missing key must be an error: {}", resp);
+        assert_eq!(
+            v["result"]["isError"],
+            json!(true),
+            "missing key must be an error: {}",
+            resp
+        );
         let msg = v["result"]["content"][0]["text"].as_str().unwrap_or("");
         assert!(
             msg.contains("NUPHUS_MCP_VISION_API_KEY"),
@@ -662,7 +732,12 @@ mod tests {
             .await
             .expect("response expected");
         let v = parse(&resp);
-        assert_eq!(v["result"]["isError"], json!(true), "missing models must be an error: {}", resp);
+        assert_eq!(
+            v["result"]["isError"],
+            json!(true),
+            "missing models must be an error: {}",
+            resp
+        );
         let msg = v["result"]["content"][0]["text"].as_str().unwrap_or("");
         assert!(
             msg.contains("ch_PP-OCRv4_det.onnx") || msg.contains("model"),

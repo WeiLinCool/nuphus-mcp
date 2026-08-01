@@ -1,29 +1,29 @@
 // desktop-api v2.0 - Nuphus core infrastructure
 // Perceive · Locate · Operate · Communicate
 
+#[cfg(feature = "http-server")]
+pub mod api;
+pub mod clipboard;
 pub mod core;
 pub mod input;
 pub mod platform;
-pub mod vision;
-#[cfg(feature = "http-server")]
-pub mod api;
 pub mod utils;
-pub mod clipboard;
+pub mod vision;
 
 pub use core::*;
 pub use input::*;
-pub use vision::*;
 pub use platform::*;
+pub use vision::*;
 
 #[cfg(feature = "http-server")]
 pub use http_server_entry::DesktopApi;
 
 #[cfg(feature = "http-server")]
 mod http_server_entry {
+    use crate::core::{Result, SessionHandle, SessionManager, TargetSpec};
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use uuid::Uuid;
-    use crate::core::{SessionManager, SessionHandle, TargetSpec, Result};
 
     /// Desktop API main entrypoint
     pub struct DesktopApi {

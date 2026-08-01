@@ -87,8 +87,8 @@ impl WindowManager {
     fn is_valid(&self, hwnd: isize) -> bool {
         #[cfg(windows)]
         {
-            use ::windows::Win32::UI::WindowsAndMessaging::IsWindow;
             use ::windows::Win32::Foundation::HWND;
+            use ::windows::Win32::UI::WindowsAndMessaging::IsWindow;
             unsafe { IsWindow(HWND(hwnd)) }.as_bool()
         }
         #[cfg(not(windows))]
@@ -128,9 +128,8 @@ impl WindowManager {
                 let _ = EnumWindows(Some(search_callback), LPARAM(userdata as isize));
             }
 
-            ctx.result.ok_or_else(|| {
-                DesktopError::TargetNotFound(format!("window not found: {}", title))
-            })
+            ctx.result
+                .ok_or_else(|| DesktopError::TargetNotFound(format!("window not found: {}", title)))
         }
         #[cfg(not(windows))]
         {
@@ -375,8 +374,10 @@ struct SearchCtx {
 
 #[cfg(windows)]
 unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible, GetWindowRect, GetWindowThreadProcessId};
     use ::windows::Win32::Foundation::BOOL;
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    };
 
     if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1);
@@ -414,8 +415,8 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 #[cfg(windows)]
 unsafe extern "system" fn search_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible};
     use ::windows::Win32::Foundation::BOOL;
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible};
 
     if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1);

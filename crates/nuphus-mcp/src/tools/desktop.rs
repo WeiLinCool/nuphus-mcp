@@ -4,11 +4,11 @@
 //! Constraint: no direct Win32 API calls bypassing desktop-api. The two capabilities desktop-api lacks
 //! (window activation, scroll wheel) are added as minimal public methods (see desktop-api change notes).
 
+use base64::Engine;
 use desktop_api::input::{self, InputEngine};
 use desktop_api::platform::WindowManager;
 use desktop_api::{GfxBackend, Scope, Target};
 use serde_json::{json, Value};
-use base64::Engine;
 
 /// Execute a desktop_* tool, returning a text result.
 pub async fn execute(name: &str, args: &Value) -> Result<String, String> {
@@ -145,7 +145,9 @@ async fn screenshot(args: &Value) -> Result<String, String> {
 
 async fn windows_list() -> Result<String, String> {
     let wm = WindowManager::new();
-    let windows = wm.list_all().map_err(|e| format!("windows list failed: {}", e))?;
+    let windows = wm
+        .list_all()
+        .map_err(|e| format!("windows list failed: {}", e))?;
     let arr: Vec<Value> = windows
         .into_iter()
         .map(|w| {
@@ -186,7 +188,8 @@ async fn window_screenshot(args: &Value) -> Result<String, String> {
         None => match title {
             Some(t) => {
                 let mut wm = WindowManager::new();
-                wm.find(t).map_err(|e| format!("window find failed: {}", e))?
+                wm.find(t)
+                    .map_err(|e| format!("window find failed: {}", e))?
             }
             None => return Err("hwnd or title required".to_string()),
         },
@@ -369,7 +372,10 @@ async fn mouse(args: &Value) -> Result<String, String> {
             let clicks = if action == "double_click" {
                 2
             } else {
-                args.get("clicks").and_then(Value::as_i64).unwrap_or(1).max(1) as u32
+                args.get("clicks")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(1)
+                    .max(1) as u32
             };
             // click/right_click internally move_to(x, y) first
             for _ in 0..clicks {
@@ -385,10 +391,16 @@ async fn mouse(args: &Value) -> Result<String, String> {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             }
-            Ok(json!({ "clicked": { "x": x, "y": y, "clicks": clicks, "button": button } }).to_string())
+            Ok(
+                json!({ "clicked": { "x": x, "y": y, "clicks": clicks, "button": button } })
+                    .to_string(),
+            )
         }
         "scroll" => {
-            let direction = args.get("direction").and_then(Value::as_str).unwrap_or("down");
+            let direction = args
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("down");
             let amount = args.get("amount").and_then(Value::as_i64).unwrap_or(3) as i32;
             input::mouse::scroll(direction, amount)
                 .await
@@ -400,12 +412,27 @@ async fn mouse(args: &Value) -> Result<String, String> {
 }
 
 async fn mouse_drag(args: &Value) -> Result<String, String> {
-    let start_x = args.get("start_x").and_then(Value::as_i64).ok_or_else(|| "start_x required".to_string())? as i32;
-    let start_y = args.get("start_y").and_then(Value::as_i64).ok_or_else(|| "start_y required".to_string())? as i32;
-    let end_x = args.get("end_x").and_then(Value::as_i64).ok_or_else(|| "end_x required".to_string())? as i32;
-    let end_y = args.get("end_y").and_then(Value::as_i64).ok_or_else(|| "end_y required".to_string())? as i32;
+    let start_x = args
+        .get("start_x")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "start_x required".to_string())? as i32;
+    let start_y = args
+        .get("start_y")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "start_y required".to_string())? as i32;
+    let end_x = args
+        .get("end_x")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "end_x required".to_string())? as i32;
+    let end_y = args
+        .get("end_y")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "end_y required".to_string())? as i32;
     input::mouse::drag(
-        desktop_api::Point { x: start_x, y: start_y },
+        desktop_api::Point {
+            x: start_x,
+            y: start_y,
+        },
         desktop_api::Point { x: end_x, y: end_y },
     )
     .await
@@ -418,7 +445,11 @@ async fn input(args: &Value) -> Result<String, String> {
         .get("mode")
         .and_then(Value::as_str)
         .ok_or_else(|| "mode is required".to_string())?;
-    let hwnd = args.get("hwnd").and_then(Value::as_i64).map(|v| v as isize).unwrap_or(0);
+    let hwnd = args
+        .get("hwnd")
+        .and_then(Value::as_i64)
+        .map(|v| v as isize)
+        .unwrap_or(0);
     let mut target = target_window(hwnd);
     let engine = InputEngine::new();
 
@@ -441,12 +472,13 @@ async fn input(args: &Value) -> Result<String, String> {
                     .map_err(|e| format!("paste failed: {}", e))?;
                 match prev {
                     Some(saved) if !saved.is_empty() => {
-                        desktop_api::clipboard::write_text(&saved).map_err(|e| {
-                            format!("paste done but clipboard restore failed: {e}")
-                        })?;
+                        desktop_api::clipboard::write_text(&saved)
+                            .map_err(|e| format!("paste done but clipboard restore failed: {e}"))?;
                     }
                     // Nothing to restore (or unreadable clipboard) → leave it clean.
-                    _ => { let _ = desktop_api::clipboard::write_text(""); }
+                    _ => {
+                        let _ = desktop_api::clipboard::write_text("");
+                    }
                 }
             } else {
                 engine
@@ -462,7 +494,12 @@ async fn input(args: &Value) -> Result<String, String> {
             let keys: Vec<String> = args
                 .get("keys")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default();
             if keys.is_empty() {
                 return Err("keys is required for mode=hotkey".to_string());
@@ -507,6 +544,7 @@ async fn clipboard_write(args: &Value) -> Result<String, String> {
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| "text is required".to_string())?;
-    desktop_api::clipboard::write_text(text).map_err(|e| format!("clipboard write failed: {}", e))?;
+    desktop_api::clipboard::write_text(text)
+        .map_err(|e| format!("clipboard write failed: {}", e))?;
     Ok(json!({ "written_chars": text.chars().count() }).to_string())
 }

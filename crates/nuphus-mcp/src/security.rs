@@ -14,7 +14,10 @@ use serde_json::Value;
 /// `desktop_mouse` is differentiated by action: position is read, everything else is write.
 pub fn is_write_tool(name: &str, args: &Value) -> bool {
     if name == "desktop_mouse" {
-        let action = args.get("action").and_then(Value::as_str).unwrap_or("position");
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("position");
         return action != "position";
     }
     matches!(
@@ -53,11 +56,23 @@ pub fn annotations_for(name: &str, args: &Value) -> Option<Value> {
 
 fn is_read_only_tool(name: &str, args: &Value) -> bool {
     match name {
-        "desktop_mouse" => args.get("action").and_then(Value::as_str).unwrap_or("position") == "position",
-        "desktop_screen_size" | "desktop_windows_list" | "desktop_window_info" | "desktop_vision"
+        "desktop_mouse" => {
+            args.get("action")
+                .and_then(Value::as_str)
+                .unwrap_or("position")
+                == "position"
+        }
+        "desktop_screen_size"
+        | "desktop_windows_list"
+        | "desktop_window_info"
+        | "desktop_vision"
         | "desktop_perceive" => true,
-        "browser_snapshot" | "browser_extract" | "browser_cookies_get" | "browser_list_tabs"
-        | "browser_list_downloads" | "browser_wait_for" => true,
+        "browser_snapshot"
+        | "browser_extract"
+        | "browser_cookies_get"
+        | "browser_list_tabs"
+        | "browser_list_downloads"
+        | "browser_wait_for" => true,
         _ => false,
     }
 }
@@ -117,7 +132,9 @@ pub fn validate_screenshot_path(path: &str) -> Result<String, String> {
     }
     let p = std::path::Path::new(trimmed);
     // Path traversal
-    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err("screenshot path must not contain '..'".to_string());
     }
     // Resolve to an absolute path (relative → against the server working directory),
@@ -208,7 +225,10 @@ mod tests {
     fn write_classifier() {
         assert!(is_write_tool("desktop_input", &json!({"mode":"type"})));
         assert!(is_write_tool("desktop_mouse", &json!({"action":"click"})));
-        assert!(!is_write_tool("desktop_mouse", &json!({"action":"position"})));
+        assert!(!is_write_tool(
+            "desktop_mouse",
+            &json!({"action":"position"})
+        ));
         assert!(is_write_tool("browser_click", &json!({"selector":"#a"})));
         assert!(!is_write_tool("browser_snapshot", &json!({})));
         assert!(!is_write_tool("desktop_screen_size", &json!({})));
@@ -220,8 +240,8 @@ mod tests {
             .expect("write tool has annotations");
         assert_eq!(d["destructiveHint"], true);
 
-        let r = annotations_for("desktop_screen_size", &json!({}))
-            .expect("read tool has annotations");
+        let r =
+            annotations_for("desktop_screen_size", &json!({})).expect("read tool has annotations");
         assert_eq!(r["readOnlyHint"], true);
 
         // desktop_mouse conservatively marked destructive at the schema level (it can click)
@@ -233,7 +253,9 @@ mod tests {
 
     #[test]
     fn strict_confirm_rejects_write_without_confirm() {
-        let policy = SecurityPolicy { strict_confirm: true };
+        let policy = SecurityPolicy {
+            strict_confirm: true,
+        };
         assert!(policy
             .check_write_confirmation("desktop_input", &json!({"mode":"type"}))
             .is_err());
@@ -245,7 +267,9 @@ mod tests {
             .check_write_confirmation("desktop_screen_size", &json!({}))
             .is_ok());
         // Non-strict mode allows writes
-        let lenient = SecurityPolicy { strict_confirm: false };
+        let lenient = SecurityPolicy {
+            strict_confirm: false,
+        };
         assert!(lenient
             .check_write_confirmation("desktop_input", &json!({"mode":"type"}))
             .is_ok());
@@ -254,17 +278,26 @@ mod tests {
     #[test]
     fn screenshot_path_validation() {
         assert!(validate_screenshot_path("").is_err());
-        assert!(validate_screenshot_path("C:\\x\\..\\evil.bmp").is_err());
+        // Device-path prefix check is string-based, platform-independent.
         assert!(validate_screenshot_path("\\\\?\\C:\\evil.bmp").is_err());
         #[cfg(windows)]
         {
+            // Windows: backslash is the path separator.
+            assert!(validate_screenshot_path("C:\\x\\..\\evil.bmp").is_err());
             assert!(validate_screenshot_path("C:\\Windows\\evil.bmp").is_err());
             assert!(validate_screenshot_path("C:\\Program Files\\evil.bmp").is_err());
-            // Existing user-writable directory passes (temp directory really exists)
-            let tmp = std::env::temp_dir().join("nuphus_mcp_shot_test.bmp");
-            let ok = validate_screenshot_path(&tmp.to_string_lossy());
-            assert!(ok.is_ok(), "temp dir path should pass: {:?}", ok.err());
         }
+        #[cfg(not(windows))]
+        {
+            // POSIX: forward slash is the path separator.
+            assert!(validate_screenshot_path("/x/../evil.bmp").is_err());
+            assert!(validate_screenshot_path("/etc/evil.bmp").is_err());
+            assert!(validate_screenshot_path("/usr/bin/evil.bmp").is_err());
+        }
+        // Existing user-writable directory passes (temp directory really exists)
+        let tmp = std::env::temp_dir().join("nuphus_mcp_shot_test.bmp");
+        let ok = validate_screenshot_path(&tmp.to_string_lossy());
+        assert!(ok.is_ok(), "temp dir path should pass: {:?}", ok.err());
     }
 
     #[test]
@@ -295,6 +328,9 @@ mod tests {
     fn relative_screenshot_path_resolves_to_absolute() {
         let p = validate_screenshot_path("nuphus_shot.bmp")
             .expect("cwd-relative path passes when cwd exists");
-        assert!(std::path::Path::new(&p).is_absolute(), "must be absolute: {p}");
+        assert!(
+            std::path::Path::new(&p).is_absolute(),
+            "must be absolute: {p}"
+        );
     }
 }

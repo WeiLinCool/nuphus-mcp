@@ -4,8 +4,8 @@
 //! nuphus-mcp's stdio loop runs on a process-level tokio runtime (lifetime = process),
 //! so here we `.await` `get_or_launch` directly (no nested `runtime().block_on`).
 
-use std::time::Duration;
 use serde_json::Value;
+use std::time::Duration;
 
 /// Allowed navigation URL schemes. Rejects `file://`, `javascript:`, `data:` etc.,
 /// which could otherwise read local files or bypass page-context sandboxing.
@@ -69,7 +69,10 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         "browser_snapshot" => {
             let full = args.get("full").and_then(Value::as_bool).unwrap_or(false);
             let selector = args.get("selector").and_then(Value::as_str);
-            client.snapshot(full, selector).await.map_err(|e| e.to_string())?
+            client
+                .snapshot(full, selector)
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_exec" => {
             let script = args.get("script").and_then(Value::as_str).unwrap_or("");
@@ -97,19 +100,31 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 .or_else(|| args.get("ref").and_then(Value::as_str))
                 .unwrap_or("");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
-            let result = client.type_text(selector, text).await.map_err(|e| e.to_string())?;
+            let result = client
+                .type_text(selector, text)
+                .await
+                .map_err(|e| e.to_string())?;
             match client.snapshot(false, None).await {
                 Ok(snap) => format!("{}\n\n── Page state ──\n{}", result, snap),
                 Err(_) => result,
             }
         }
         "browser_scroll" => {
-            let direction = args.get("direction").and_then(Value::as_str).unwrap_or("down");
+            let direction = args
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("down");
             let amount = args.get("amount").and_then(Value::as_i64).unwrap_or(500) as i32;
-            client.scroll(direction, amount).await.map_err(|e| e.to_string())?
+            client
+                .scroll(direction, amount)
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_extract" => {
-            let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(8000) as usize;
+            let max_chars = args
+                .get("max_chars")
+                .and_then(Value::as_u64)
+                .unwrap_or(8000) as usize;
             client.extract(max_chars).await.map_err(|e| e.to_string())?
         }
         "browser_screenshot" => {
@@ -122,7 +137,10 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 }
                 None => None,
             };
-            client.screenshot(path.as_deref()).await.map_err(|e| e.to_string())?
+            client
+                .screenshot(path.as_deref())
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_close" => {
             client.close().await.map_err(|e| e.to_string())?;
@@ -140,9 +158,18 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 .get("selector")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "browser_wait_for: selector required".to_string())?;
-            let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(5000);
-            let state = args.get("state").and_then(Value::as_str).unwrap_or("attached");
-            client.wait_for(selector, timeout_ms, state).await.map_err(|e| e.to_string())?
+            let timeout_ms = args
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(5000);
+            let state = args
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("attached");
+            client
+                .wait_for(selector, timeout_ms, state)
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_cookies_get" => {
             let cookies = client.cookies_get().await.map_err(|e| e.to_string())?;
@@ -160,14 +187,20 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         }
         "browser_import_cookies" => {
             let domain = args.get("domain").and_then(Value::as_str);
-            client.import_cookies(domain).await.map_err(|e| e.to_string())?
+            client
+                .import_cookies(domain)
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_upload" => {
             let selector = args.get("selector").and_then(Value::as_str).unwrap_or("");
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
             // Security boundary: the file to upload must really exist
             crate::security::validate_upload_file(file_path)?;
-            client.upload_file(selector, file_path).await.map_err(|e| e.to_string())?
+            client
+                .upload_file(selector, file_path)
+                .await
+                .map_err(|e| e.to_string())?
         }
         "browser_list_downloads" => client.list_downloads().map_err(|e| e.to_string())?,
         "browser_new_tab" => {

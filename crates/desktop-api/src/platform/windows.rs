@@ -9,9 +9,14 @@ use crate::platform::WindowInfo;
 /// - `hwnd` must be a valid window handle
 /// - `lparam` must point to a valid `Vec<WindowInfo>`
 /// - The caller must ensure the correctness of the Windows enumeration context
-pub unsafe extern "system" fn enum_callback(hwnd: ::windows::Win32::Foundation::HWND, lparam: ::windows::Win32::Foundation::LPARAM) -> ::windows::Win32::Foundation::BOOL {
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible, GetWindowRect, GetWindowThreadProcessId};
+pub unsafe extern "system" fn enum_callback(
+    hwnd: ::windows::Win32::Foundation::HWND,
+    lparam: ::windows::Win32::Foundation::LPARAM,
+) -> ::windows::Win32::Foundation::BOOL {
     use ::windows::Win32::Foundation::{BOOL, RECT};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    };
 
     if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1);
@@ -53,9 +58,12 @@ pub unsafe extern "system" fn enum_callback(hwnd: ::windows::Win32::Foundation::
 /// - `hwnd` must be a valid window handle
 /// - `lparam` must point to a valid `SearchCtx`
 /// - The caller must ensure the correctness of the Windows enumeration context
-pub unsafe extern "system" fn search_callback(hwnd: ::windows::Win32::Foundation::HWND, lparam: ::windows::Win32::Foundation::LPARAM) -> ::windows::Win32::Foundation::BOOL {
-    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible};
+pub unsafe extern "system" fn search_callback(
+    hwnd: ::windows::Win32::Foundation::HWND,
+    lparam: ::windows::Win32::Foundation::LPARAM,
+) -> ::windows::Win32::Foundation::BOOL {
     use ::windows::Win32::Foundation::BOOL;
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, IsWindowVisible};
 
     if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1);
@@ -80,8 +88,8 @@ pub unsafe extern "system" fn search_callback(hwnd: ::windows::Win32::Foundation
 
 /// Detect the window graphics backend
 pub fn detect_gfx_backend(hwnd: isize) -> GfxBackend {
-    use ::windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
     use ::windows::Win32::Foundation::HWND;
+    use ::windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
 
     let mut buf = [0u16; 256];
     let len = unsafe { GetClassNameW(HWND(hwnd), &mut buf) };

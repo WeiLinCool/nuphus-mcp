@@ -97,13 +97,16 @@ pub fn resolve_models_dir() -> Option<PathBuf> {
 pub fn models_dir_for_write() -> Result<PathBuf, String> {
     if let Ok(dir) = std::env::var("NUPHUS_MODELS_DIR") {
         let p = PathBuf::from(&dir);
-        std::fs::create_dir_all(&p).map_err(|e| format!("failed to create model directory {}: {e}", p.display()))?;
+        std::fs::create_dir_all(&p)
+            .map_err(|e| format!("failed to create model directory {}: {e}", p.display()))?;
         return Ok(p);
     }
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| "unable to locate user data directory (dirs::data_dir returned None)".to_string())?;
+    let data_dir = dirs::data_dir().ok_or_else(|| {
+        "unable to locate user data directory (dirs::data_dir returned None)".to_string()
+    })?;
     let p = data_dir.join("Nuphus").join("models");
-    std::fs::create_dir_all(&p).map_err(|e| format!("failed to create model directory {}: {e}", p.display()))?;
+    std::fs::create_dir_all(&p)
+        .map_err(|e| format!("failed to create model directory {}: {e}", p.display()))?;
     Ok(p)
 }
 

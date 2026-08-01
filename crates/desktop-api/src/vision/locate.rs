@@ -1,7 +1,7 @@
 //! Locate implementation - image/text/color search + fallback strategy
 
 use crate::core::*;
-use crate::vision::{FindResult, FindMethod, Query, DeltaColor, ScanDirection};
+use crate::vision::{DeltaColor, FindMethod, FindResult, Query, ScanDirection};
 
 pub struct Locator;
 
@@ -17,11 +17,7 @@ impl Locator {
     }
 
     /// Main locate entrypoint - with fallback strategy
-    pub async fn find_with_fallback(
-        &self,
-        frame: &Frame,
-        query: &Query,
-    ) -> Result<FindResult> {
+    pub async fn find_with_fallback(&self, frame: &Frame, query: &Query) -> Result<FindResult> {
         match query {
             Query::Image(img) => self.find_image(frame, img).await,
             Query::Text(_text) => {
@@ -34,7 +30,11 @@ impl Locator {
                 })
             }
             Query::Color { target, tolerance } => self.find_color(frame, *target, *tolerance),
-            Query::TextThenColor { text: _, color, tolerance } => {
+            Query::TextThenColor {
+                text: _,
+                color,
+                tolerance,
+            } => {
                 // Fallback: directly find the color
                 self.find_color(frame, *color, *tolerance)
             }
@@ -136,7 +136,11 @@ impl Locator {
         if elapsed > 500 {
             tracing::warn!(
                 "[find_image] search took {}ms ({}x{} frame, {}x{} template)",
-                elapsed, fw, fh, tw, th
+                elapsed,
+                fw,
+                fh,
+                tw,
+                th
             );
         }
 
@@ -245,12 +249,7 @@ impl Locator {
     }
 
     /// Find color - legacy interface compatibility (uses a single tolerance value)
-    fn find_color(
-        &self,
-        frame: &Frame,
-        target: Color,
-        tolerance: u8,
-    ) -> Result<FindResult> {
+    fn find_color(&self, frame: &Frame, target: Color, tolerance: u8) -> Result<FindResult> {
         let delta = DeltaColor::from_tolerance(tolerance);
         self.find_color_with_delta(frame, target, &delta, ScanDirection::default())
     }

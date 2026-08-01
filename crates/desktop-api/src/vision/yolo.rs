@@ -54,10 +54,14 @@ impl YoloDetector {
 
         let session = ort::session::Session::builder()
             .map_err(|e| {
-                DesktopError::Other(anyhow::anyhow!("[yolo] failed to create session builder: {e}"))
+                DesktopError::Other(anyhow::anyhow!(
+                    "[yolo] failed to create session builder: {e}"
+                ))
             })?
             .commit_from_file(model_path)
-            .map_err(|e| DesktopError::Other(anyhow::anyhow!("[yolo] failed to load model: {e}")))?;
+            .map_err(|e| {
+                DesktopError::Other(anyhow::anyhow!("[yolo] failed to load model: {e}"))
+            })?;
 
         // Diagnostic logs
         for input in session.inputs() {
@@ -118,14 +122,18 @@ impl YoloDetector {
         let detections = {
             let outputs = session
                 .run(ort::inputs![input_name.as_str() => input_value])
-                .map_err(|e| DesktopError::Other(anyhow::anyhow!("[yolo] inference failed: {e}")))?;
+                .map_err(|e| {
+                    DesktopError::Other(anyhow::anyhow!("[yolo] inference failed: {e}"))
+                })?;
 
             let output_value = outputs.get(output_name.as_str()).ok_or_else(|| {
                 DesktopError::Other(anyhow::anyhow!("[yolo] output '{output_name}' not found"))
             })?;
 
             let output_view = output_value.try_extract_array::<f32>().map_err(|e| {
-                DesktopError::Other(anyhow::anyhow!("[yolo] failed to extract output array: {e}"))
+                DesktopError::Other(anyhow::anyhow!(
+                    "[yolo] failed to extract output array: {e}"
+                ))
             })?;
 
             // Diagnostics
@@ -215,7 +223,9 @@ impl YoloDetector {
         use image::imageops::FilterType;
 
         let rgba = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
-            .ok_or_else(|| DesktopError::Other(anyhow::anyhow!("[yolo] invalid frame pixel data")))?;
+            .ok_or_else(|| {
+                DesktopError::Other(anyhow::anyhow!("[yolo] invalid frame pixel data"))
+            })?;
 
         let rgb = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
         let resized =
@@ -234,8 +244,9 @@ impl YoloDetector {
             }
         }
 
-        let arr = ndarray::Array4::from_shape_vec((1, 3, h, w), data)
-            .map_err(|e| DesktopError::Other(anyhow::anyhow!("[yolo] failed to build ndarray: {e}")))?;
+        let arr = ndarray::Array4::from_shape_vec((1, 3, h, w), data).map_err(|e| {
+            DesktopError::Other(anyhow::anyhow!("[yolo] failed to build ndarray: {e}"))
+        })?;
 
         Ok(arr)
     }

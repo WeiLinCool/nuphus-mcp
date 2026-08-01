@@ -40,9 +40,9 @@ fn sources_for(file: &str) -> Vec<&'static str> {
             "https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
             "https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
         ],
-        "ch_PP-OCR_keys_v1.txt" => vec![
-            "https://gitee.com/paddlepaddle/PaddleOCR/raw/main/ppocr/utils/ppocr_keys_v1.txt",
-        ],
+        "ch_PP-OCR_keys_v1.txt" => {
+            vec!["https://gitee.com/paddlepaddle/PaddleOCR/raw/main/ppocr/utils/ppocr_keys_v1.txt"]
+        }
         _ => vec![],
     }
 }
@@ -182,7 +182,9 @@ async fn download_file(
             .await
             .map_err(|e| format!("write temp file failed: {e}"))?;
     }
-    file.flush().await.map_err(|e| format!("flush failed: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("flush failed: {e}"))?;
     drop(file);
 
     // Integrity check before the temp file can become a "valid" model.
@@ -251,7 +253,10 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         const KEY: &str = "NUPHUS_MCP_MODEL_SHA256_ch_PP-OCRv4_det.onnx";
         std::env::set_var(KEY, "  abc  ");
-        assert_eq!(expected_sha256("ch_PP-OCRv4_det.onnx"), Some("abc".to_string()));
+        assert_eq!(
+            expected_sha256("ch_PP-OCRv4_det.onnx"),
+            Some("abc".to_string())
+        );
         std::env::remove_var(KEY);
         assert_eq!(expected_sha256("ch_PP-OCRv4_det.onnx"), None);
     }

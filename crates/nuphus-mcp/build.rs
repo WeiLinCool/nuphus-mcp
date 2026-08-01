@@ -15,8 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// NuGet package + exact version to fetch (must match the ORT API version loaded at runtime).
-const NUGET_URL: &str =
-    "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/1.27.0";
+const NUGET_URL: &str = "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/1.27.0";
 /// SHA-256 of the nupkg above (verified 2026-08-01). Used to detect a truncated download.
 const NUPKG_SHA256: &str = "c725e8cefdfe4de08befb9f79b3f218c162439cdcdb97cbbb5192888d58ea669";
 /// Skip download entirely (e.g. offline CI that vendored the DLL itself).
@@ -98,7 +97,9 @@ fn main() {
         }
         Err(_) => None,
     };
-    let Some(profile_dir) = profile_dir else { return };
+    let Some(profile_dir) = profile_dir else {
+        return;
+    };
 
     // Skip when every requested lib is already present (user-placed or previous build).
     let all_present = lib
@@ -158,7 +159,9 @@ fn ensure_nupkg(cache: &Path) -> Option<PathBuf> {
     // Verify hash (catches truncated downloads / captive-portal HTML pages).
     match sha256(cache) {
         Some(h) if h != NUPKG_SHA256 => {
-            println!("cargo:warning=ONNX Runtime: downloaded nupkg hash mismatch (got {h}); discarding.");
+            println!(
+                "cargo:warning=ONNX Runtime: downloaded nupkg hash mismatch (got {h}); discarding."
+            );
             let _ = std::fs::remove_file(cache);
             None
         }
@@ -184,7 +187,10 @@ fn extract_native(nupkg: &Path, rid: &str, file: &str, dest: &Path) -> Result<()
             .is_ok()
     };
     if !ok {
-        return Err(format!("could not extract `{entry}` from {}", nupkg.display()));
+        return Err(format!(
+            "could not extract `{entry}` from {}",
+            nupkg.display()
+        ));
     }
 
     let extracted = out_dir.join(&entry);

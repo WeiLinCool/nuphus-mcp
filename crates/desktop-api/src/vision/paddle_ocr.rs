@@ -7,7 +7,9 @@
 
 use std::path::PathBuf;
 
-use crate::vision::models::{resolve_models_dir, validate_ocr_models, PADDLE_DET_MODEL, PADDLE_REC_MODEL, PADDLE_DICT};
+use crate::vision::models::{
+    resolve_models_dir, validate_ocr_models, PADDLE_DET_MODEL, PADDLE_DICT, PADDLE_REC_MODEL,
+};
 
 /// OCR text block (with position)
 #[derive(Debug, Clone)]
@@ -49,8 +51,8 @@ impl PaddleOcr {
             .map_err(|e| format!("failed to load recognition model: {e}"))?;
 
         // Load the character dictionary
-        let dict_content =
-            std::fs::read_to_string(&dict_path).map_err(|e| format!("failed to read dictionary: {e}"))?;
+        let dict_content = std::fs::read_to_string(&dict_path)
+            .map_err(|e| format!("failed to read dictionary: {e}"))?;
         let char_dict: Vec<String> = dict_content.lines().map(|s| s.to_owned()).collect();
 
         if char_dict.len() < 100 {
@@ -402,8 +404,7 @@ impl PaddleOcr {
         let mean = [0.5f32, 0.5, 0.5];
         let std = [0.5f32, 0.5, 0.5];
 
-        let mut array =
-            ndarray::Array4::<f32>::zeros((1, 3, target_h as usize, target_w as usize));
+        let mut array = ndarray::Array4::<f32>::zeros((1, 3, target_h as usize, target_w as usize));
 
         for y in 0..target_h as usize {
             for x in 0..resized.width() as usize {

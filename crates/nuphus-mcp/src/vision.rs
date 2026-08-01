@@ -27,9 +27,7 @@ impl VisionConfig {
         let api_key = std::env::var("NUPHUS_MCP_VISION_API_KEY")
             .map_err(|_| "NUPHUS_MCP_VISION_API_KEY required: set this environment variable to your vision model API key (BYOK)".to_string())?;
         if api_key.trim().is_empty() {
-            return Err(
-                "NUPHUS_MCP_VISION_API_KEY required: value must not be empty".to_string(),
-            );
+            return Err("NUPHUS_MCP_VISION_API_KEY required: value must not be empty".to_string());
         }
 
         let model = std::env::var("NUPHUS_MCP_VISION_MODEL")
@@ -75,8 +73,7 @@ pub async fn vision_image(image_path: &str, prompt: Option<&str>) -> Result<Stri
     let config = VisionConfig::from_env()?;
 
     // 1. Read image → convert to PNG (LLM APIs generally do not accept image/bmp)
-    let image_bytes = std::fs::read(image_path)
-        .map_err(|e| format!("read image failed: {}", e))?;
+    let image_bytes = std::fs::read(image_path).map_err(|e| format!("read image failed: {}", e))?;
     let (mime_type, final_bytes) = if image_path.to_lowercase().ends_with(".png") {
         ("image/png", image_bytes)
     } else {
@@ -93,9 +90,7 @@ pub async fn vision_image(image_path: &str, prompt: Option<&str>) -> Result<Stri
     let data_url = format!("data:{mime_type};base64,{base64_image}");
 
     // 2. Build Chat Completions request
-    let prompt_text = prompt
-        .filter(|p| !p.is_empty())
-        .unwrap_or(DEFAULT_PROMPT);
+    let prompt_text = prompt.filter(|p| !p.is_empty()).unwrap_or(DEFAULT_PROMPT);
 
     let body = json!({
         "model": config.model,

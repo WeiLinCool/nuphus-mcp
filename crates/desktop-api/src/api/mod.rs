@@ -7,102 +7,90 @@ pub mod http;
 
 #[cfg(feature = "http-server")]
 mod api_impl {
-        use crate::core::{SessionHandle, Scope, Point, Target, Result};
-        use crate::input::InputEngine;
-        use crate::vision::{VisionEngine, PerceiveWhat, Query, FindResult, Perception};
-        use crate::platform::WindowManager;
+    use crate::core::{Point, Result, Scope, SessionHandle, Target};
+    use crate::input::InputEngine;
+    use crate::platform::WindowManager;
+    use crate::vision::{FindResult, PerceiveWhat, Perception, Query, VisionEngine};
 
-        /// Unified API entrypoint
-        pub struct UnifiedApi {
-            vision: VisionEngine,
-            input: InputEngine,
-            window_mgr: WindowManager,
+    /// Unified API entrypoint
+    pub struct UnifiedApi {
+        vision: VisionEngine,
+        input: InputEngine,
+        window_mgr: WindowManager,
+    }
+
+    impl UnifiedApi {
+        pub fn new() -> Self {
+            let cleanup = crate::utils::cleanup::CleanupQueue::new();
+            Self {
+                vision: VisionEngine::new(cleanup.clone()),
+                input: InputEngine::new(),
+                window_mgr: WindowManager::new(),
+            }
         }
 
-        impl UnifiedApi {
-            pub fn new() -> Self {
-                let cleanup = crate::utils::cleanup::CleanupQueue::new();
-                Self {
-                    vision: VisionEngine::new(cleanup.clone()),
-                    input: InputEngine::new(),
-                    window_mgr: WindowManager::new(),
+        // ─────────────────────────────── see ───────────────────────────────
+
+        /// Perceive - screenshot + analyze
+        pub async fn see(
+            &self,
+            session: &SessionHandle,
+            scope: Scope,
+            what: PerceiveWhat,
+        ) -> Result<Perception> {
+            let target = session.target.read().await;
+            self.vision.see(&*target, scope, what).await
+        }
+
+        // ─────────────────────────────── find ───────────────────────────────
+
+        /// Find - locate image/text/color
+        pub async fn find(&self, session: &SessionHandle, query: &Query) -> Result<FindResult> {
+            // Take a screenshot first
+            let target = session.target.read().await;
+            let frame = self.vision.capture(&*target, Scope::Window).await?;
+
+            // Locate
+            self.vision.find(&frame, query).await
+        }
+
+        // ─────────────────────────────── do ───────────────────────────────
+
+        /// Operate - click/drag/keypress
+        pub async fn do_(&self, session: &SessionHandle, action: Action) -> Result<DoResult> {
+            let mut target = session.target.write().await;
+
+            match action {
+                Action::Click { x, y } => {
+                    self.input.click(&mut *target, Point { x, y }).await?;
+                    Ok(DoResult::Success)
+                }
+                Action::DoubleClick { x, y } => {
+                    self.input.click(&mut *target, Point { x, y }).await?;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    self.input.click(&mut *target, Point { x, y }).await?;
+                    Ok(DoResult::Success)
+                }
+                Action::Drag { start, end } => {
+                    self.input.drag(&mut *target, start, end).await?;
+                    Ok(DoResult::Success)
+                }
+                Action::Press { key } => {
+                    self.input.press(&mut *target, &key).await?;
+                    Ok(DoResult::Success)
+                }
+                Action::Hotkey { keys } => {
+                    let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
+                    self.input.hotkey(&mut *target, &keys_ref).await?;
+                    Ok(DoResult::Success)
                 }
             }
+        }
 
-            // ─────────────────────────────── see ───────────────────────────────
+        // ─────────────────────────────── say ───────────────────────────────
 
-            /// Perceive - screenshot + analyze
-            pub async fn see(
-                &self,
-                session: &SessionHandle,
-                scope: Scope,
-                what: PerceiveWhat,
-            ) -> Result<Perception> {
-                let target = session.target.read().await;
-                self.vision.see(&*target, scope, what).await
-            }
-
-            // ─────────────────────────────── find ───────────────────────────────
-
-            /// Find - locate image/text/color
-            pub async fn find(
-                &self,
-                session: &SessionHandle,
-                query: &Query,
-            ) -> Result<FindResult> {
-                // Take a screenshot first
-                let target = session.target.read().await;
-                let frame = self.vision.capture(&*target, Scope::Window).await?;
-
-                // Locate
-                self.vision.find(&frame, query).await
-            }
-
-            // ─────────────────────────────── do ───────────────────────────────
-
-            /// Operate - click/drag/keypress
-            pub async fn do_(
-                &self,
-                session: &SessionHandle,
-                action: Action,
-            ) -> Result<DoResult> {
-                let mut target = session.target.write().await;
-
-                match action {
-                    Action::Click { x, y } => {
-                        self.input.click(&mut *target, Point { x, y }).await?;
-                        Ok(DoResult::Success)
-                    }
-                    Action::DoubleClick { x, y } => {
-                        self.input.click(&mut *target, Point { x, y }).await?;
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        self.input.click(&mut *target, Point { x, y }).await?;
-                        Ok(DoResult::Success)
-                    }
-                    Action::Drag { start, end } => {
-                        self.input.drag(&mut *target, start, end).await?;
-                        Ok(DoResult::Success)
-                    }
-                    Action::Press { key } => {
-                        self.input.press(&mut *target, &key).await?;
-                        Ok(DoResult::Success)
-                    }
-                    Action::Hotkey { keys } => {
-                        let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-                        self.input.hotkey(&mut *target, &keys_ref).await?;
-                        Ok(DoResult::Success)
-                    }
-                }
-            }
-
-            // ─────────────────────────────── say ───────────────────────────────
-
-            /// Communicate - send message + verify delivery
-            pub async fn say(
-                &self,
-                session: &SessionHandle,
-                text: &str,
-            ) -> Result<SayResult> {
+        /// Communicate - send message + verify delivery
+        pub async fn say(&self, session: &SessionHandle, text: &str) -> Result<SayResult> {
             let mut target = session.target.write().await;
 
             // Strategy 1: direct send
