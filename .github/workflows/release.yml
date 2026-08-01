@@ -70,6 +70,12 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # macos-latest's fleet can mix x86_64 and arm64 runners; a cache
+          # written by one arch and restored on the other makes host build
+          # scripts fail with "cannot execute binary file". Scope the cache
+          # per runner arch + target so the two never share artifacts.
+          key: ${{ runner.arch }}-${{ matrix.target }}
 
       # Linux system deps for the C-FFI crates in the tree (openssl-sys,
       # wayland-sys, xcb, xkbcommon, enigo, xcap). apt-get update is flaky on
@@ -82,20 +88,26 @@ jobs:
           [ "${{ matrix.name }}" = "linux-arm64" ] && CROSS=true
           if $CROSS; then
             sudo dpkg --add-architecture arm64
+            # Ubuntu hosts arm64 packages on ports.ubuntu.com, not the default
+            # archive/security mirrors — without these sources apt sees no arm64
+            # packages at all (404 on binary-arm64 → "Unable to locate ...:arm64").
+            printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ %s main universe multiverse restricted\n' \
+              noble noble-updates noble-security \
+              | sudo tee /etc/apt/sources.list.d/arm64.list > /dev/null
           fi
           # apt-get update is flaky on GitHub runners — retry before giving up.
           for i in 1 2 3; do
             sudo apt-get update && break || { echo "apt-get update failed (attempt $i), retrying..."; sleep 10; }
           done
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
-          # xcap 0.9 captures via X11/xcb + pipewire; alsa/gl are NOT in the
-          # dependency tree (no audio/GL crates), so libasound2-dev and
-          # libgl1-mesa-dev are intentionally omitted — they don't exist for
-          # arm64 cross and aren't needed.
+          # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
+          # EGL/GL and GBM, plus pipewire via libspa-sys. There are no audio
+          # crates in the dependency tree, so libasound2-dev stays out.
           LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
                 libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
                 libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
-                libxrandr-dev libxi-dev libpipewire-0.3-dev"
+                libxrandr-dev libxi-dev libpipewire-0.3-dev \
+                libgl1-mesa-dev libegl1-mesa-dev libgbm-dev"
           if $CROSS; then
             # Cross-compile: every dev lib must be the arm64 flavor so the
             # aarch64 toolchain finds matching headers/.pc files.
