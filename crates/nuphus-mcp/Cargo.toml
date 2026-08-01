@@ -1,0 +1,42 @@
+[package]
+name = "nuphus-mcp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/nuphus/nuphus-mcp"
+description = "Desktop automation MCP server — computer use for any AI agent: control screen, windows, mouse/keyboard, and Chrome via Model Context Protocol (stdio)"
+authors = ["Nuphus Team"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging (stderr; stdout reserved for JSON-RPC protocol)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+
+# Desktop control core (screenshot/input/window) — default features (vision/input/platform/core)
+desktop-api = { path = "../desktop-api" }
+
+# Browser automation (CDP)
+nuphus-browser = { path = "../nuphus-browser" }
+
+# Screenshot BMP encoding
+image = { version = "0.25", default-features = false, features = ["bmp"] }
+
+# base64 (inline screenshot return)
+base64 = "0.22"
+
+# HTTP (desktop_vision BYOK cloud vision + model download)
+# Reuses the reqwest 0.12 already pulled in by chromiumoxide (default native-tls), no extra dependency tree
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Streaming download (model files)
+futures-util = "0.3"

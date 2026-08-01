@@ -1,0 +1,178 @@
+# nuphus-mcp
+
+**Desktop automation MCP server — computer use for any AI agent. See the screen, control windows/mouse/keyboard, and drive Chrome over the Model Context Protocol (stdio). Desktop & browser automation need no API key; OCR runs locally; vision plugs into your own vision LLM (OpenAI-compatible, BYOK).**
+
+`nuphus-mcp` is a lightweight, cross-platform **desktop automation MCP server**
+that exposes desktop + browser automation as standard MCP tools. It speaks
+JSON-RPC 2.0 over stdio — no daemon, no network service, one binary. Claude
+Desktop, Cursor, VS Code, Copilot, or any MCP client can connect and
+immediately control the screen, windows, keyboard/mouse, and Chrome —
+**computer use for any AI agent** — desktop & browser automation need no API
+key; local OCR is built in; vision works with your own vision LLM
+(OpenAI-compatible, BYOK).
+
+```
+┌──────────────────┐   stdio JSON-RPC   ┌──────────────────────┐
+│  Any MCP Client  │  ───────────────►  │      nuphus-mcp      │
+│  (Claude/Cursor/ │  ◄───────────────  │  desktop-api crate   │──► screen/window/mouse/keyboard
+│   Nuphus itself) │  single-line JSON  │  nuphus-browser crate│──► Chrome (CDP)
+└──────────────────┘                    └──────────────────────┘
+```
+
+## Features
+
+- **36 MCP tools** (15 desktop + 21 browser) — screenshots, window control,
+  mouse/keyboard, Chrome CDP automation, and more — see [TOOLS.md](TOOLS.md) /
+  [TOOLS.zh-CN.md](TOOLS.zh-CN.md) for the full reference.
+- **Desktop automation**: screen size, screenshot (BMP/base64), window list,
+  window activate/screenshot/move/resize/info, mouse click/drag/scroll/position,
+  keyboard input/hotkey, clipboard write/clean — implemented on the
+  `desktop-api` crate (xcap + Win32, no Tauri dependency).
+- **Computer vision pair**: `desktop_vision` (BYOK — send a screenshot to your
+  own vision model via an OpenAI-compatible API) + `desktop_perceive` (local
+  OCR with PaddleOCR, models auto-downloaded on first run; optional YOLO icon
+  detection). Used together they give AI agents **both semantic understanding
+  and pixel-precise coordinates** — the battle-tested vision→perceive flow from
+  the Nuphus desktop app. See [TOOLS.md](TOOLS.md) for BYOK env vars, model
+  setup, and the recommended flow.
+- **Browser automation**: navigate, snapshot (accessibility tree with `@N`
+  refs), click, type, exec, scroll, extract, screenshot, evaluate,
+  back/forward, wait_for, cookies get/set/import, upload, tabs, downloads —
+  implemented on `nuphus-browser` (chromiumoxide CDP).
+- **Zero-cost stdio**: no HTTP server, no daemon. The process reads
+  single-line JSON from stdin and writes responses to stdout.
+- **Safety-first**: destructive tools are annotated per the MCP spec; optional
+  strict-confirm mode; path validation for screenshot/upload.
+
+## Repository Layout
+
+```
+nuphus-mcp/
+├── Cargo.toml                  # workspace root
+├── TOOLS.md / TOOLS.zh-CN.md   # 36-tool reference
+├── crates/
+│   ├── nuphus-mcp/             # MCP Server (this repo's product)
+│   ├── nuphus-browser/         # Browser automation core (CDP)
+│   └── desktop-api/            # Desktop control core (vendored)
+└── ...
+```
+
+## Prerequisites
+
+- **Rust toolchain** (stable) — build from source with Cargo.
+- **Chrome or Edge** — required for browser tools. The server auto-detects an
+  installed browser; if none is found, `browser_*` tools return a clear error.
+- **Windows recommended** for full desktop control — see Platform Support below.
+
+## Platform Support
+
+| Platform | Browser tools | Desktop tools |
+|----------|---------------|---------------|
+| Windows  | Full          | Full (Win32 API) |
+| macOS    | Full          | Desktop input requires Accessibility permission (System Settings → Privacy & Security → Accessibility) |
+| Linux    | Available     | Partial — window/input capabilities are limited |
+
+## API Keys & Local Models
+
+### Vision — BYOK, OpenAI-compatible
+
+`desktop_vision` uses **your own** vision model through an OpenAI-compatible
+Chat Completions endpoint. Nothing is required unless you call this tool — and
+when it is not configured the tool returns a clear error instead of silently
+failing.
+
+| Environment variable | Required | Default | Description |
+|----------------------|----------|---------|-------------|
+| `NUPHUS_MCP_VISION_API_KEY` | ✅ | — | API key for your vision model |
+| `NUPHUS_MCP_VISION_BASE_URL` | — | `https://api.openai.com/v1` | OpenAI-compatible base URL |
+| `NUPHUS_MCP_VISION_MODEL` | ✅ | — | Model id, e.g. `gpt-4o-mini`, `qwen-vl-max` |
+
+### Perceive models (local, auto-downloaded)
+
+`desktop_perceive` runs PaddleOCR locally with ONNX Runtime. The first call
+downloads the OCR models automatically into `%APPDATA%\Nuphus\models` (or
+`NUPHUS_MODELS_DIR`). Download failures return a clear error with manual
+instructions. YOLO icon detection (`icon_detect.onnx`) is an optional
+enhancement and is not auto-downloaded. See
+[TOOLS.md → Vision & Local Models](TOOLS.md#vision--local-models).
+
+All other tools need no API key.
+
+## Install & Run
+
+```sh
+cargo build --release -p nuphus-mcp
+# binary at target/release/nuphus-mcp(.exe)
+```
+
+The server reads newline-delimited JSON from stdin and writes JSON-RPC
+responses to stdout. Logs go to stderr.
+
+```sh
+# quick smoke test
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | .\target\debug\nuphus-mcp.exe
+```
+
+## MCP Client Configuration
+
+Point any MCP client at the binary. The `command` is the path to
+`nuphus-mcp` (or `nuphus-mcp.exe`).
+
+**Claude Desktop** — `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "C:\\path\\to\\nuphus-mcp.exe",
+      "args": []
+    }
+  }
+}
+```
+
+**Any MCP client** (generic mcpServers JSON):
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "/absolute/path/to/nuphus-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+Supported MCP methods: `initialize`, `notifications/initialized`, `ping`,
+`tools/list`, `tools/call`.
+
+## Demo
+
+A self-contained stdio client that walks through
+`initialize → tools/list → tools/call`:
+
+```sh
+cargo build -p nuphus-mcp
+cargo run -p nuphus-mcp --example demo
+```
+
+## Tests
+
+```sh
+cargo check --workspace
+cargo test -p nuphus-mcp          # protocol + security + vision + models tests (28)
+```
+
+## Safety
+
+This server can physically control the machine it runs on. Read
+[SECURITY.md](SECURITY.md) and the [Safety Annotations section of
+TOOLS.md](TOOLS.md#safety-annotations) before deploying. Recommended: run with
+`--confirm-write` (or `NUPHUS_MCP_CONFIRM_WRITE=1`) so write tools require an
+explicit `"confirm": true` argument.
+
+## License
+
+MIT

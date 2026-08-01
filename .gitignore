@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+*.tmp
+nuphus-debug.log
+debug_req_body.json
+
+# Local config
+config.toml
+config.local.toml
+
+# Scan artifacts
+desktop_api_chinese_scan.txt

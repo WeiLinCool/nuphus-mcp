@@ -1,0 +1,163 @@
+# nuphus-mcp
+
+**桌面自动化 MCP Server —— 为任意 AI 智能体提供"计算机使用"能力。看屏幕、控制窗口/键鼠、驱动 Chrome，经 Model Context Protocol（stdio）接入。**
+
+`nuphus-mcp` 是一个轻量、跨平台的**桌面自动化 MCP Server**，把桌面与浏览器自动化能力
+封装为标准 MCP 工具。它通过 stdio 走 JSON-RPC 2.0 —— 无守护进程、无网络服务、
+单二进制。Claude Desktop、Cursor、VS Code、Copilot、任意 MCP 客户端乃至 Nuphus
+自身都能即连即用，控制屏幕、窗口、键鼠与 Chrome —— **为任意 AI 智能体提供
+"计算机使用"能力：桌面与浏览器自动化无需 API Key；内置本地 OCR；视觉能力
+支持接入你自己的视觉大模型（OpenAI 兼容协议，BYOK）**。
+
+```
+┌──────────────────┐   stdio JSON-RPC   ┌──────────────────────┐
+│  任意 MCP 客户端  │  ───────────────►  │      nuphus-mcp      │
+│  (Claude/Cursor/ │  ◄───────────────  │  desktop-api crate   │──► 屏幕/窗口/键鼠
+│   Nuphus 自身)    │    单行 JSON       │  nuphus-browser crate│──► Chrome (CDP)
+└──────────────────┘                    └──────────────────────┘
+```
+
+## 特性
+
+- **36 个 MCP 工具**（桌面 15 + 浏览器 21）—— 完整参考见
+  [TOOLS.md](TOOLS.md) / [TOOLS.zh-CN.md](TOOLS.zh-CN.md)。
+- **桌面自动化**：屏幕分辨率、截图（BMP/base64）、窗口列表、窗口激活/截图/移动/缩放/信息查询、
+  鼠标点击/拖拽/滚轮/定位、键盘输入/快捷键、剪贴板写入/清空 —— 基于
+  `desktop-api` crate（xcap + Win32），不依赖 Tauri。
+- **计算机视觉双件套**：`desktop_vision`（BYOK —— 截图发送到你自己的视觉模型，OpenAI
+  兼容 API）+ `desktop_perceive`（本地 OCR，PaddleOCR，首次运行自动下载模型；
+  可选 YOLO 图标检测）。二者配合让 AI 智能体**同时获得语义理解与像素级精确坐标**
+  —— 这是 Nuphus 桌面应用实战验证过的 vision→perceive 流程。BYOK 环境变量、
+  模型配置与推荐配合见 [TOOLS.md](TOOLS.md)。
+- **浏览器自动化**：导航、快照（无障碍树 `@N` 引用）、点击、输入、批量脚本、
+  滚动、正文提取、截图、JS 执行、前进/后退、等待、Cookie 读写/导入、文件上传、
+  标签页、下载目录 —— 基于 `nuphus-browser`（chromiumoxide CDP）。
+- **零成本 stdio**：无 HTTP 服务、无常驻进程。进程从 stdin 读单行 JSON，向
+  stdout 写响应。
+- **安全优先**：破坏性工具按 MCP 规范标注；可选严格确认模式；截图/上传路径校验。
+
+## 仓库结构
+
+```
+nuphus-mcp/
+├── Cargo.toml                  # workspace 根
+├── TOOLS.md / TOOLS.zh-CN.md   # 36 工具参考文档
+├── crates/
+│   ├── nuphus-mcp/             # MCP Server（本仓库产品）
+│   ├── nuphus-browser/         # 浏览器自动化核心（CDP）
+│   └── desktop-api/            # 桌面控制核心（vendored）
+└── ...
+```
+
+## 环境依赖
+
+- **Rust 工具链（stable）** —— 通过 Cargo 从源码构建。
+- **Chrome 或 Edge** —— browser 工具必需。server 自动查找本机已安装的浏览器；
+  找不到时 `browser_*` 工具返回明确错误。
+- **Windows 优先推荐** —— 桌面控制完整支持，见下方平台支持。
+
+## 平台支持
+
+| 平台 | 浏览器工具 | 桌面工具 |
+|------|-----------|---------|
+| Windows | 全量 | 全量（Win32 API） |
+| macOS | 全量 | 桌面输入需在「系统设置 → 隐私与安全性 → 辅助功能」中授权 |
+| Linux | 可用 | 部分支持——窗口/输入能力受限 |
+
+## API Key 与本地模型
+
+### 视觉理解（可选，BYOK）
+
+`desktop_vision` 使用**你自己的**视觉模型（OpenAI 兼容 Chat Completions）。
+不调用该工具就不需要任何配置；未配置时工具返回明确错误，不会静默失败。
+
+| 环境变量 | 必填 | 默认值 | 说明 |
+|----------|------|--------|------|
+| `NUPHUS_MCP_VISION_API_KEY` | ✅ | — | 视觉模型 API Key |
+| `NUPHUS_MCP_VISION_BASE_URL` | — | `https://api.openai.com/v1` | OpenAI 兼容 base URL |
+| `NUPHUS_MCP_VISION_MODEL` | ✅ | — | 模型 ID，如 `gpt-4o-mini`、`qwen-vl-max` |
+
+### perceive 模型（本地，自动下载）
+
+`desktop_perceive` 用 ONNX Runtime 本地运行 PaddleOCR。首次调用自动下载 OCR
+模型到 `%APPDATA%\Nuphus\models`（或 `NUPHUS_MODELS_DIR`）。下载失败时返回
+明确错误并附手动指引。YOLO 图标检测（`icon_detect.onnx`）是可选增强，不自动
+下载。详见 [TOOLS.zh-CN.md → 视觉与本地模型](TOOLS.zh-CN.md#视觉与本地模型)。
+
+其余工具无需任何 API key。
+
+## 安装与运行
+
+```sh
+cargo build --release -p nuphus-mcp
+# 二进制在 target/release/nuphus-mcp(.exe)
+```
+
+server 从 stdin 读换行分隔的 JSON，向 stdout 写 JSON-RPC 响应；日志一律走
+stderr。
+
+```sh
+# 快速冒烟
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | .\target\debug\nuphus-mcp.exe
+```
+
+## MCP 客户端配置
+
+把任意 MCP 客户端指向该二进制即可。`command` 为 `nuphus-mcp`（或
+`nuphus-mcp.exe`）的路径。
+
+**Claude Desktop** — `claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "C:\\path\\to\\nuphus-mcp.exe",
+      "args": []
+    }
+  }
+}
+```
+
+**任意 MCP 客户端**（通用 mcpServers JSON）：
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "/absolute/path/to/nuphus-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+
+支持的方法：`initialize`、`notifications/initialized`、`ping`、`tools/list`、`tools/call`。
+
+## Demo
+
+自包含 stdio 客户端，完整走 `initialize → tools/list → tools/call`：
+
+```sh
+cargo build -p nuphus-mcp
+cargo run -p nuphus-mcp --example demo
+```
+
+## 测试
+
+```sh
+cargo check --workspace
+cargo test -p nuphus-mcp          # 协议 + 安全 + 视觉 + 模型测试（28）
+```
+
+## 安全
+
+本 server 能物理控制所在机器。部署前请阅读 [SECURITY.md](SECURITY.md) 和
+[TOOLS.zh-CN.md 的安全标注章节](TOOLS.zh-CN.md#安全标注)。建议以
+`--confirm-write`（或 `NUPHUS_MCP_CONFIRM_WRITE=1`）运行，使写工具要求参数显式
+携带 `"confirm": true`。
+
+## License
+
+MIT

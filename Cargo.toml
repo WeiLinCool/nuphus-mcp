@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nuphus-mcp",
+    "crates/nuphus-browser",
+    "crates/desktop-api",
+]
+
+# Workspace-level metadata template: future crates can inherit via `license.workspace = true`.
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/nuphus/nuphus-mcp"
+homepage = "https://github.com/nuphus/nuphus-mcp"
+documentation = "https://github.com/nuphus/nuphus-mcp"
