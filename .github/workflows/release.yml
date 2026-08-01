@@ -261,7 +261,10 @@ jobs:
             echo "GAVE UP AFTER RETRIES: $tgz"
             return 1
           }
-          for tgz in nuphus-mcp-*.tgz; do
+          # Scoped pack names are <scope>-<name>-<ver>.tgz (e.g.
+          # nuphus-nuphus-mcp-linux-arm64-0.1.0.tgz); dist/ only ever holds the
+          # five platform tarballs, so *.tgz is exact here.
+          for tgz in *.tgz; do
             publish_pkg "$tgz"
             # Space new-package creations out: creating several new names in a few
             # seconds trips npm's spam detection on a new account.
@@ -277,7 +280,7 @@ jobs:
           npm pack --pack-destination dist-meta ./npm/packages/nuphus-mcp
           cd dist-meta
           ok=""
-          for tgz in nuphus-mcp-*.tgz; do
+          for tgz in *.tgz; do
             for i in 1 2 3 4 5; do
               out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; ok=1; break; }
               if echo "$out" | grep -qE "E409|cannot publish over"; then echo "ALREADY PUBLISHED: $tgz"; ok=1; break; fi

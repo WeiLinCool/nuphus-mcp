@@ -52,11 +52,11 @@ function run() {
 
 This usually means the platform package was not installed. Install it explicitly:
 
-    npm install -g ${pkg}
+    npm install -g @nuphus/${pkg}
 
 or reinstall the meta package:
 
-    npm install -g nuphus-mcp`);
+    npm install -g @nuphus/nuphus-mcp`);
     process.exit(1);
   }
 
