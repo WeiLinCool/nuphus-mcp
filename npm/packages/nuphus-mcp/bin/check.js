@@ -11,11 +11,28 @@ const platform =
   process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'osx' : process.platform === 'linux' ? 'linux' : process.platform;
 const arch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : process.arch;
 const pkg = `nuphus-mcp-${platform}-${arch}`;
+const binFile = `nuphus-mcp${process.platform === 'win32' ? '.exe' : ''}`;
 
-const pkgDir = path.join(__dirname, '..', '..', pkg);
-const exe = path.join(pkgDir, 'bin', `nuphus-mcp${process.platform === 'win32' ? '.exe' : ''}`);
+// Same walk-up search as cli.js: npm >= 10 nests optionalDependencies under
+// the dependent package in global installs instead of hoisting them as
+// siblings, so both layouts must be checked.
+let exe = null;
+let dir = __dirname;
+for (;;) {
+  for (const sub of [path.join('node_modules', '@nuphus', pkg), path.join('node_modules', pkg)]) {
+    const candidate = path.join(dir, sub, 'bin', binFile);
+    if (fs.existsSync(candidate)) {
+      exe = candidate;
+      break;
+    }
+  }
+  if (exe) break;
+  const parent = path.dirname(dir);
+  if (parent === dir) break;
+  dir = parent;
+}
 
-if (fs.existsSync(exe)) {
+if (exe) {
   process.exit(0); // good
 }
 

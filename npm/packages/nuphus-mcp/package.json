@@ -1,6 +1,6 @@
 {
   "name": "@nuphus/nuphus-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Nuphus MCP server — AI computer operation (desktop + browser tools). Platform binary auto-selected via optionalDependencies.",
   "license": "MIT",
   "repository": {

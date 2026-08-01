@@ -20,10 +20,8 @@ function platformPackageName() {
   return `nuphus-mcp-${platform}-${arch}`;
 }
 
-function binaryNameFor(pkg) {
+function binaryInDir(pkgDir, pkg, binFile) {
   // The platform package always lays the binary at bin/nuphus-mcp(.exe).
-  const pkgDir = path.join(__dirname, '..', '..', pkg);
-  const binFile = 'nuphus-mcp' + (process.platform === 'win32' ? '.exe' : '');
   const candidate = path.join(pkgDir, 'bin', binFile);
   if (fs.existsSync(candidate)) return candidate;
 
@@ -41,6 +39,27 @@ function binaryNameFor(pkg) {
     }
   }
   return null;
+}
+
+function binaryNameFor(pkg) {
+  const binFile = 'nuphus-mcp' + (process.platform === 'win32' ? '.exe' : '');
+
+  // npm can lay out the optional platform packages two ways:
+  //   hoisted sibling:  <prefix>/node_modules/@nuphus/<pkg>/bin/<bin>
+  //   nested:           <prefix>/node_modules/@nuphus/<meta>/node_modules/@nuphus/<pkg>/bin/<bin>
+  // (npm >= 10 tends to NEST optionalDependencies under the dependent package
+  // in a global install, so `__dirname/../..` never resolves. Walk up the
+  // directory tree checking node_modules at each level, like `require` does.)
+  let dir = __dirname;
+  for (;;) {
+    for (const sub of [path.join('node_modules', '@nuphus', pkg), path.join('node_modules', pkg)]) {
+      const found = binaryInDir(path.join(dir, sub), pkg, binFile);
+      if (found) return found;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 function run() {
