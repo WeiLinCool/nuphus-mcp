@@ -1,0 +1,178 @@
+name: Release
+
+# Build the nuphus-mcp binary for all supported platforms on tag push,
+# bundle each into its npm platform package, publish to npm, and attach the
+# tarballs to a GitHub Release.
+#
+# Trigger: git tag v0.1.0 && git push origin v0.1.0
+#
+# Secrets required in the repo:
+#   NPM_TOKEN  — npm publish token (user "nuphus")
+#   GH_TOKEN   — GitHub PAT with contents:write (for creating the Release)
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: win32-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg_dir: npm/packages/nuphus-mcp-win32-x64
+            artifact: nuphus-mcp-win32-x64
+            native_libs: "onnxruntime.dll onnxruntime_providers_shared.dll"
+          - name: win32-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            pkg_dir: npm/packages/nuphus-mcp-win32-arm64
+            artifact: nuphus-mcp-win32-arm64
+            native_libs: "onnxruntime.dll onnxruntime_providers_shared.dll"
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            pkg_dir: npm/packages/nuphus-mcp-linux-x64
+            artifact: nuphus-mcp-linux-x64
+            native_libs: "libonnxruntime.so libonnxruntime_providers_shared.so"
+          - name: linux-arm64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            pkg_dir: npm/packages/nuphus-mcp-linux-arm64
+            artifact: nuphus-mcp-linux-arm64
+            native_libs: "libonnxruntime.so libonnxruntime_providers_shared.so"
+          - name: osx-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            pkg_dir: npm/packages/nuphus-mcp-osx-arm64
+            artifact: nuphus-mcp-osx-arm64
+            native_libs: "libonnxruntime.dylib"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # reqwest's native-tls pulls openssl-sys on Linux, which needs dev headers.
+      - name: Install Linux build deps (linux-x64)
+        if: matrix.name == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      # Linux ARM64 cross-compile: gcc for aarch64 + arm64 OpenSSL for openssl-sys.
+      - name: Install cross toolchain (linux-arm64)
+        if: matrix.name == 'linux-arm64'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 pkg-config
+
+      - name: Set cross env (linux-arm64)
+        if: matrix.name == 'linux-arm64'
+        run: |
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+
+      # aarch64-pc-windows-msvc needs the ARM64 MSVC toolchain (link.exe arm64).
+      - name: Setup ARM64 MSVC (win32-arm64)
+        if: matrix.name == 'win32-arm64'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p nuphus-mcp
+
+      - name: Copy binary + native libs into platform package
+        shell: bash
+        run: |
+          src=target/${{ matrix.target }}/release/nuphus-mcp
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then src="${src}.exe"; fi
+          mkdir -p ${{ matrix.pkg_dir }}/bin
+          cp "$src" ${{ matrix.pkg_dir }}/bin/
+          for lib in ${{ matrix.native_libs }}; do
+            cp "target/${{ matrix.target }}/release/$lib" ${{ matrix.pkg_dir }}/bin/
+          done
+          ls -la ${{ matrix.pkg_dir }}/bin/
+
+      - name: npm pack platform package
+        working-directory: ${{ matrix.pkg_dir }}
+        run: npm pack --pack-destination ../../../dist
+
+      - name: Copy raw binary for Release attachment
+        shell: bash
+        run: |
+          src=target/${{ matrix.target }}/release/nuphus-mcp
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then src="${src}.exe"; fi
+          mkdir -p dist/binary
+          cp "$src" dist/binary/${{ matrix.artifact }}
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/*.tgz
+            dist/binary/*
+          retention-days: 7
+
+  publish:
+    name: publish npm + GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish platform packages to npm
+        working-directory: dist
+        run: |
+          for tgz in nuphus-mcp-*.tgz; do
+            npm publish "$tgz" --access public
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Pack the meta package to a SEPARATE dir so the glob above never
+      # re-matches (and re-publishes) the platform tarballs.
+      - name: Pack + publish meta package
+        run: |
+          npm pack --pack-destination dist-meta ./npm/packages/nuphus-mcp
+          cd dist-meta
+          npm publish nuphus-mcp-*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tgz
+            dist/binary/*
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}

@@ -1,0 +1,6 @@
+# Normalize to LF. CRLF would corrupt the shebang in bin/cli.js on Unix
+# (#!/usr/bin/env node\r breaks) and confuse npm's line-based parsers.
+*.js  text eol=lf
+*.json text eol=lf
+*.sh  text eol=lf
+*.yml text eol=lf

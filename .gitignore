@@ -24,3 +24,10 @@ config.local.toml
 
 # Scan artifacts
 desktop_api_chinese_scan.txt
+
+# npm build output (packed tarballs)
+dist/
+
+# Compiled binaries inside platform packages — copied by CI/local, never committed.
+npm/packages/nuphus-mcp-*/bin/*
+!npm/packages/nuphus-mcp-*/bin/.gitkeep
