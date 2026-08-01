@@ -37,6 +37,11 @@ jobs:
             pkg_dir: npm/packages/nuphus-mcp-win32-arm64
             artifact: nuphus-mcp-win32-arm64
             native_libs: "onnxruntime.dll onnxruntime_providers_shared.dll"
+            # x64-host → arm64-target MSVC link.exe is unreliable on runners
+            # (VsDevCmd arm64 gives native HostARM64, which can't run on x64).
+            # lld-link (shipped with the runner) links ARM64 from a single
+            # x64 binary; LIB/INCLUDE still point at the ARM64 CRT via msvc-dev-cmd.
+            rustflags: "-C linker=lld-link"
           - name: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -66,20 +71,38 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # reqwest's native-tls pulls openssl-sys on Linux, which needs dev headers.
-      - name: Install Linux build deps (linux-x64)
-        if: matrix.name == 'linux-x64'
+      # Linux system deps for the C-FFI crates in the tree (openssl-sys,
+      # wayland-sys, xcb, xkbcommon, enigo, xcap). apt-get update is flaky on
+      # GitHub runners, so retry it a few times before giving up.
+      - name: Install Linux build deps
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev
-
-      # Linux ARM64 cross-compile: gcc for aarch64 + arm64 OpenSSL for openssl-sys.
-      - name: Install cross toolchain (linux-arm64)
-        if: matrix.name == 'linux-arm64'
-        run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64 pkg-config
+          set -e
+          CROSS=false
+          [ "${{ matrix.name }}" = "linux-arm64" ] && CROSS=true
+          if $CROSS; then
+            sudo dpkg --add-architecture arm64
+          fi
+          # apt-get update is flaky on GitHub runners — retry before giving up.
+          for i in 1 2 3; do
+            sudo apt-get update && break || { echo "apt-get update failed (attempt $i), retrying..."; sleep 10; }
+          done
+          HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
+          LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
+                libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+                libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
+                libxrandr-dev libxi-dev libasound2-dev libgl1-mesa-dev"
+          if $CROSS; then
+            # Cross-compile: every dev lib must be the arm64 flavor so the
+            # aarch64 toolchain finds matching headers/.pc files.
+            CROSS_LIBS=""
+            for lib in $LIBS; do CROSS_LIBS="$CROSS_LIBS $lib:arm64"; done
+            sudo apt-get install -y $HOST_PKGS $CROSS_LIBS
+          else
+            sudo apt-get install -y $HOST_PKGS $LIBS
+          fi
+        env:
+          DEBIAN_FRONTEND: noninteractive
 
       - name: Set cross env (linux-arm64)
         if: matrix.name == 'linux-arm64'
@@ -87,7 +110,8 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
 
-      # aarch64-pc-windows-msvc needs the ARM64 MSVC toolchain (link.exe arm64).
+      # aarch64-pc-windows-msvc needs the ARM64 MSVC LIB/INCLUDE paths so
+      # lld-link can resolve the ARM64 CRT/import libs.
       - name: Setup ARM64 MSVC (win32-arm64)
         if: matrix.name == 'win32-arm64'
         uses: ilammy/msvc-dev-cmd@v1
@@ -96,6 +120,8 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} -p nuphus-mcp
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
       - name: Copy binary + native libs into platform package
         shell: bash
@@ -109,9 +135,13 @@ jobs:
           done
           ls -la ${{ matrix.pkg_dir }}/bin/
 
+      # Pack from the repo root with an absolute destination. A relative
+      # --pack-destination failed on Windows when dist/ didn't exist yet
+      # (npm 11 ENOENT), so create it first and use github.workspace.
       - name: npm pack platform package
-        working-directory: ${{ matrix.pkg_dir }}
-        run: npm pack --pack-destination ../../../dist
+        run: |
+          mkdir -p "${{ github.workspace }}/dist"
+          npm pack --pack-destination "${{ github.workspace }}/dist" ./${{ matrix.pkg_dir }}
 
       - name: Copy raw binary for Release attachment
         shell: bash

@@ -232,7 +232,11 @@ fn detect_screen_size() -> (u32, u32) {
     };
     match xcap::Monitor::all() {
         Ok(monitors) => match monitors.into_iter().next() {
-            Some(primary) => (primary.width(), primary.height()),
+            // xcap 0.9 returns Result for width/height — bail to fallback on error.
+            Some(primary) => match (primary.width(), primary.height()) {
+                (Ok(w), Ok(h)) => (w, h),
+                _ => fallback(),
+            },
             None => fallback(),
         },
         Err(_) => fallback(),
