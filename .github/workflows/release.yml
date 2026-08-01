@@ -7,7 +7,7 @@ name: Release
 # Trigger: git tag v0.1.0 && git push origin v0.1.0
 #
 # Secrets required in the repo:
-#   NPM_TOKEN  — npm publish token (user "nuphus")
+#   NUPHUS_MCP_NPM  — npm publish token (user "nuphus")
 # The GitHub Release uses the workflow's auto-generated GITHUB_TOKEN
 # (contents:write is enough to create a Release), so no GH secret needed.
 
@@ -155,7 +155,7 @@ jobs:
             npm publish "$tgz" --access public
           done
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NUPHUS_MCP_NPM }}
 
       # Pack the meta package to a SEPARATE dir so the glob above never
       # re-matches (and re-publishes) the platform tarballs.
@@ -165,7 +165,7 @@ jobs:
           cd dist-meta
           npm publish nuphus-mcp-*.tgz --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NUPHUS_MCP_NPM }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
