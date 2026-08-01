@@ -8,7 +8,8 @@ name: Release
 #
 # Secrets required in the repo:
 #   NPM_TOKEN  — npm publish token (user "nuphus")
-#   GH_TOKEN   — GitHub PAT with contents:write (for creating the Release)
+# The GitHub Release uses the workflow's auto-generated GITHUB_TOKEN
+# (contents:write is enough to create a Release), so no GH secret needed.
 
 on:
   push:
@@ -174,5 +175,3 @@ jobs:
             dist/binary/*
           draft: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
