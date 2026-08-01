@@ -227,7 +227,6 @@ fn run_tar(entry: &str, nupkg: &Path, out_dir: &Path) -> Result<(), ()> {
 fn run_unzip(entry: &str, nupkg: &Path, out_dir: &Path) -> Result<(), ()> {
     Command::new("unzip")
         .arg("-o")
-        .arg("-j")
         .arg(nupkg)
         .arg(entry)
         .arg("-d")

@@ -54,6 +54,11 @@ jobs:
             pkg_dir: npm/packages/nuphus-mcp-linux-arm64
             artifact: nuphus-mcp-linux-arm64
             native_libs: "libonnxruntime.so libonnxruntime_providers_shared.so"
+            # Without an explicit cross linker rustc drives the HOST cc (x86_64
+            # gcc + x86_64 gcc-ld), so lld runs in x86_64 mode and rejects the
+            # aarch64 objects ("incompatible with elf64-x86-64"). gcc-aarch64-linux-gnu
+            # (installed in Install Linux build deps) is the canonical cross driver.
+            rustflags: "-C linker=aarch64-linux-gnu-gcc"
           - name: osx-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -129,9 +134,10 @@ jobs:
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
           # EGL/GL and GBM, plus pipewire via libspa-sys. enigo 0.2's default
-          # xdo backend links libxdo (xdotool). No audio crates in the tree, so
-          # libasound2-dev stays out.
-          LIBS="libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
+          # xdo backend links libxdo (xdotool). unzip is the fallback extractor
+          # in build.rs for the onnxruntime nupkg (GNU tar can't read zip).
+          # No audio crates in the tree, so libasound2-dev stays out.
+          LIBS="unzip libssl-dev libwayland-dev libxkbcommon-dev libx11-dev \
                 libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
                 libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev \
                 libxrandr-dev libxi-dev libpipewire-0.3-dev \
