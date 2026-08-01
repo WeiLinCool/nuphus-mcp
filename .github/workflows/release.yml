@@ -115,6 +115,16 @@ jobs:
             # amd64 one to match (runner only hosts build tools, so a glibc
             # downgrade is harmless).
             sudo apt-get install -y --allow-downgrades libc6:arm64
+            # Scoped pkg-config for the cross target. pkg-config uses the
+            # <triple>-suffixed variants ONLY when probing for aarch64, so host
+            # build-script deps (e.g. openssl-sys under a build script) still
+            # resolve the host's OpenSSL instead of the arm64 one. A plain
+            # global PKG_CONFIG_PATH leaked into host deps and made the host
+            # linker reject arm64 libssl.so (elf64-x86-64 incompatible).
+            # (cargo's [target.<triple>].env is not a real key — env must be
+            # global — so these go through GITHUB_ENV.)
+            echo "PKG_CONFIG_ALLOW_CROSS_aarch64_unknown_linux_gnu=1" >> "$GITHUB_ENV"
+            echo "PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
           fi
           HOST_PKGS="pkg-config gcc-aarch64-linux-gnu"
           # xcap 0.9 pulls libwayshot-xcap (Linux Wayland capture) which needs
@@ -138,11 +148,16 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
 
-      # Cross env for linux-arm64 (PKG_CONFIG_PATH/PKG_CONFIG_ALLOW_CROSS) is
-      # scoped via .cargo/config.toml [target.aarch64-unknown-linux-gnu].env so
-      # it only reaches genuinely-arm64 crates — a global GITHUB_ENV leaked the
-      # arm64 path into host build-script deps (openssl-sys under ort-sys's
-      # build script) and made the host linker reject arm64 libssl.so.
+      # Cross env for linux-arm64 (PKG_CONFIG_ALLOW_CROSS_<triple> /
+      # PKG_CONFIG_PATH_<triple>) is set in "Install Linux build deps" above,
+      # through GITHUB_ENV with the aarch64-unknown-linux-gnu triple suffix.
+      # pkg-config only reads the <triple>-suffixed vars when probing for
+      # aarch64, so host build-script deps (openssl-sys under ort-sys's build
+      # script) still resolve the host's OpenSSL instead of the arm64 one — a
+      # global PKG_CONFIG_PATH leaked the arm64 path into host deps and made
+      # the host linker reject arm64 libssl.so (elf64-x86-64 incompatible).
+      # (cargo's [target.<triple>].env is not a real key — env must be global —
+      # which is why these go through GITHUB_ENV instead of .cargo/config.toml.)
 
       # aarch64-pc-windows-msvc needs the ARM64 MSVC LIB/INCLUDE paths so
       # lld-link can resolve the ARM64 CRT/import libs.
