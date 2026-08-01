@@ -15,6 +15,12 @@ on:
   push:
     tags: ['v*']
 
+# GITHUB_TOKEN defaults to read-only; softprops/action-gh-release needs
+# contents: write to create the Release and upload the tarball attachments
+# (and generate_release_notes: true hits a separate write API).
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
