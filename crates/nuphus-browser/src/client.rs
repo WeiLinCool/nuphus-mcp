@@ -749,22 +749,29 @@ impl BrowserClient {
 
     /// Probe whether the existing CDP connection is still alive.
     ///
-    /// Lightweight probe: issue one fetch_targets to the background handler. When the
-    /// connection is dead the handler loop has already exited (receiver gone), so the
-    /// send or rx.await necessarily fails; if the handler is still running but the ws
-    /// is broken, its internal submit_command panics and drops tx, and rx.await returns
-    /// an error the same way (the panic does not cross the handler task boundary). A
-    /// timeout guards against a half-dead connection blocking indefinitely. Any failure
-    /// or timeout is treated as an unusable connection.
+    /// Lightweight probe: issue one browser-level read-only command (`version`,
+    /// `Browser.getVersion`) to the background handler. When the connection is dead
+    /// the handler loop has already exited (receiver gone), so the send or rx.await
+    /// necessarily fails; if the handler is still running but the ws is broken, its
+    /// internal submit_command panics and drops tx, and rx.await returns an error the
+    /// same way (the panic does not cross the handler task boundary). A timeout guards
+    /// against a half-dead connection blocking indefinitely. Any failure or timeout is
+    /// treated as an unusable connection.
+    ///
+    /// ⚠ Do NOT use `fetch_targets` here: chromiumoxide's `Target.getTargets` response
+    /// handler re-creates every existing target (`on_target_created` → `targets.insert`),
+    /// which overwrites the live `Target` entries and drops their `PageHandle`s — the
+    /// command channel every existing `Page` sends on. A probe on an established
+    /// connection would therefore kill every open page while still returning "alive".
     async fn browser_connection_alive(&self) -> bool {
         let browser_arc = match self.browser.as_ref() {
             Some(arc) => arc,
             None => return false,
         };
-        let mut browser_guard = browser_arc.lock().await;
+        let browser_guard = browser_arc.lock().await;
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            browser_guard.fetch_targets(),
+            browser_guard.version(),
         )
         .await
         {
@@ -2323,6 +2330,44 @@ setTimeout(function(){ document.getElementById('will-hide').remove(); }, 1000);
 setTimeout(function(){ document.getElementById('will-show').style.display = 'block'; }, 1500);
 </script>
 </body></html>"#;
+
+    /// Regression: a second operation on an established connection must not kill the page.
+    ///
+    /// The CDP liveness probe used to call `fetch_targets`, whose `Target.getTargets`
+    /// response handler re-creates every existing target and drops their PageHandles,
+    /// so any operation after the first (probe runs again → page channel receiver gone)
+    /// failed with "send failed because receiver is gone" while the probe still reported
+    /// the connection alive. Fixed by probing with the side-effect-free `version()`.
+    /// Two navigations on the same page must both succeed.
+    #[tokio::test]
+    #[ignore]
+    async fn probe_must_not_kill_existing_page() {
+        let mut client = isolated_client("probe_regression");
+        client.launch(true).await.expect("launch");
+
+        let url = fixture_url("probe_regression", "<h1>hello</h1>");
+        client
+            .navigate(&url)
+            .await
+            .expect("first navigation should succeed");
+        // launch() runs the liveness probe on the second call — this used to drop the page.
+        client
+            .navigate(&url)
+            .await
+            .expect("second navigation must not fail with a dead page channel");
+        // A page-level command must still reach the handler (get_title returns Ok).
+        let page = client.page.as_ref().expect("page exists").clone();
+        {
+            let guard = page.lock().await;
+            guard
+                .get_title()
+                .await
+                .expect("page command must still work after second launch()");
+        }
+
+        client.close().await.ok();
+        cleanup_profile("probe_regression");
+    }
 
     /// wait_for three states: attached hits immediately; visible waits for the element to
     /// transition from display:none to visible; hidden waits for the element to be removed;
