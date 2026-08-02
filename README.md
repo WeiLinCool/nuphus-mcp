@@ -11,6 +11,10 @@ immediately control the screen, windows, keyboard/mouse, and Chrome —
 key; local OCR is built in; vision works with your own vision LLM
 (OpenAI-compatible, BYOK).
 
+> **🇨🇳 Mainland China mirror**: this repo is mirrored on
+> [Gitee](https://gitee.com/nuphus/nuphus-mcp) for fast in-China access
+> (Chinese docs served by default there). [中文文档](README.zh-CN.md)
+
 ```
 ┌──────────────────┐   stdio JSON-RPC   ┌──────────────────────┐
 │  Any MCP Client  │  ───────────────►  │      nuphus-mcp      │

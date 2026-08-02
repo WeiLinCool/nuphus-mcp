@@ -9,6 +9,9 @@
 "计算机使用"能力：桌面与浏览器自动化无需 API Key；内置本地 OCR；视觉能力
 支持接入你自己的视觉大模型（OpenAI 兼容协议，BYOK）**。
 
+> **国内镜像**：本仓库同时镜像到 [Gitee](https://gitee.com/nuphus/nuphus-mcp)，
+> 国内访问更快、默认显示中文文档。GitHub 打不开时用 Gitee。
+
 ```
 ┌──────────────────┐   stdio JSON-RPC   ┌──────────────────────┐
 │  任意 MCP 客户端  │  ───────────────►  │      nuphus-mcp      │
