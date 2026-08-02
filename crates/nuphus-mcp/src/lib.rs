@@ -4,6 +4,7 @@
 //! automation capabilities as a Model Context Protocol Server. Any MCP client
 //! (Claude / Cursor / custom Agent / Nuphus main app itself) can connect via stdio.
 
+pub mod automation_lock;
 pub mod models;
 pub mod protocol;
 pub mod security;

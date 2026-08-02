@@ -500,16 +500,36 @@ impl BrowserClient {
 
     /// Launch browser.
     ///
-    /// Idempotent: returns immediately if already launched and the current mode satisfies the request. Headed is a functional superset —
+    /// Idempotent: returns immediately if already launched (connection alive) and the current mode
+    /// satisfies the request. A dead connection (shared Chrome killed by an external process) is
+    /// automatically reset and reconnected. Headed is a functional superset —
     /// a headed instance also serves headless requests; a headless instance receives a headed
     /// request and is closed and relaunched as an upgrade (browser tools require a user-visible window).
     pub async fn launch(&mut self, headless: bool) -> Result<(), BrowserError> {
+        // Idempotency + dead-connection probe: a Chrome shared across processes (same profile)
+        // may be killed by an external process. In that case self.browser is still Some but the
+        // underlying CDP handler's receiver is gone — without the probe we would permanently
+        // return Ok(()), and every later call would fail with "receiver is gone". On probe
+        // failure we reset to None (close() on a dead connection may error spuriously) and
+        // fall through to the attach → launch reconnect path.
         if self.browser.is_some() {
-            let upgrade = self.launched_headless == Some(true) && !headless;
-            if !upgrade {
-                return Ok(()); // Already launched, current mode satisfies the request
+            if self.browser_connection_alive().await {
+                let upgrade = self.launched_headless == Some(true) && !headless;
+                if !upgrade {
+                    return Ok(()); // Already launched, current mode satisfies the request
+                }
+                self.close().await?;
+            } else {
+                tracing::warn!("[Browser] existing CDP connection dead, resetting for reconnect");
+                // Release local state; if the instance was launched by this process, reap the child.
+                self.browser = None;
+                self.page = None;
+                self.launched_headless = None;
+                if let Some(mut child) = self.child_process.take() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
             }
-            self.close().await?;
         }
 
         // Attach first: if a Chrome with a debugging port is already running for the same profile (an in-app
@@ -517,6 +537,21 @@ impl BrowserClient {
         // only one Chrome instance per profile is allowed at a time, so a hard launch would inevitably fail.
         if self.try_attach().await.is_ok() {
             return Ok(());
+        }
+
+        // Before deleting locks, confirm the attach target is actually dead: if DevToolsActivePort
+        // still points to a live instance, removing SingletonLock/SingletonSocket would break its
+        // singleton state, and a hard launch on the same profile would exit with code 21. Retry
+        // attach once against the live instance; only delete locks when the instance is dead.
+        if self.attach_target_alive().await {
+            if self.try_attach().await.is_ok() {
+                return Ok(());
+            }
+            return Err(BrowserError::Launch(
+                "DevToolsActivePort points to a live Chrome instance but CDP attach \
+                 keeps failing; refusing to delete its profile locks"
+                    .into(),
+            ));
         }
 
         // Clean up stale lock files that can cause Chrome exit code 21
@@ -681,10 +716,93 @@ impl BrowserClient {
             "[Browser] attached to running Chrome instance (port={})",
             port
         );
-        self.browser = Some(Arc::new(Mutex::new(browser)));
+        let browser_arc = Arc::new(Mutex::new(browser));
+        self.browser = Some(browser_arc.clone());
         self.child_process = None; // attached instance does not belong to this process; close must not kill it
         self.launched_headless = None; // mode unknown; do not trigger a headless→headed upgrade restart
+
+        // A2: actively pull existing targets after attaching. chromiumoxide only tracks
+        // pages created after the connection is established; without fetch_targets,
+        // list_tabs/switch_tab would return an empty list for pre-existing tabs. Failure
+        // is warn-only — the connection is already established; missing targets only
+        // mean an empty tab list and should not fail the whole attach.
+        {
+            let mut browser_guard = browser_arc.lock().await;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                browser_guard.fetch_targets(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    "[Browser] fetch_targets after attach failed (existing tabs may be missing): {e}"
+                ),
+                Err(_) => tracing::warn!(
+                    "[Browser] fetch_targets after attach timed out (existing tabs may be missing)"
+                ),
+            }
+        }
+
         Ok(())
+    }
+
+    /// Probe whether the existing CDP connection is still alive.
+    ///
+    /// Lightweight probe: issue one fetch_targets to the background handler. When the
+    /// connection is dead the handler loop has already exited (receiver gone), so the
+    /// send or rx.await necessarily fails; if the handler is still running but the ws
+    /// is broken, its internal submit_command panics and drops tx, and rx.await returns
+    /// an error the same way (the panic does not cross the handler task boundary). A
+    /// timeout guards against a half-dead connection blocking indefinitely. Any failure
+    /// or timeout is treated as an unusable connection.
+    async fn browser_connection_alive(&self) -> bool {
+        let browser_arc = match self.browser.as_ref() {
+            Some(arc) => arc,
+            None => return false,
+        };
+        let mut browser_guard = browser_arc.lock().await;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            browser_guard.fetch_targets(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                tracing::debug!("[Browser] liveness probe failed: {e}");
+                false
+            }
+            Err(_) => {
+                tracing::debug!("[Browser] liveness probe timed out");
+                false
+            }
+        }
+    }
+
+    /// Probe whether the DevToolsActivePort port is still listened on by a live instance.
+    ///
+    /// try_attach has already failed at this point; this is a light TCP probe: port
+    /// connectable → instance alive (usually a transient attach failure, locks must not
+    /// be deleted); file missing / parse failure / port unreachable → instance dead
+    /// (crash leftover), locks may be safely deleted for a hard launch.
+    async fn attach_target_alive(&self) -> bool {
+        let port_file = self.profile_dir.join("DevToolsActivePort");
+        let content = match std::fs::read_to_string(&port_file) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let port = match content.lines().next().and_then(|l| l.trim().parse::<u16>().ok()) {
+            Some(p) => p,
+            None => return false,
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await
+        .map(|res| res.is_ok())
+        .unwrap_or(false)
     }
 
     /// Navigate to URL

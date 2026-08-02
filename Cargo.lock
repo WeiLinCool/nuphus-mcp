@@ -2053,6 +2053,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "desktop-api",
+ "dirs",
  "futures-util",
  "hex",
  "image",

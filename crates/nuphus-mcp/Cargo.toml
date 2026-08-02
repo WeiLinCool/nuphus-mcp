@@ -22,6 +22,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Error handling
 thiserror = "2"
 
+# Data directory probing (automation lock shared path)
+dirs = "5"
+
 # Desktop control core (screenshot/input/window) — default features (vision/input/platform/core)
 desktop-api = { path = "../desktop-api" }
 
