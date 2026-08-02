@@ -769,11 +769,7 @@ impl BrowserClient {
             None => return false,
         };
         let browser_guard = browser_arc.lock().await;
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            browser_guard.version(),
-        )
-        .await
+        match tokio::time::timeout(std::time::Duration::from_secs(3), browser_guard.version()).await
         {
             Ok(Ok(_)) => true,
             Ok(Err(e)) => {
@@ -799,7 +795,11 @@ impl BrowserClient {
             Ok(c) => c,
             Err(_) => return false,
         };
-        let port = match content.lines().next().and_then(|l| l.trim().parse::<u16>().ok()) {
+        let port = match content
+            .lines()
+            .next()
+            .and_then(|l| l.trim().parse::<u16>().ok())
+        {
             Some(p) => p,
             None => return false,
         };

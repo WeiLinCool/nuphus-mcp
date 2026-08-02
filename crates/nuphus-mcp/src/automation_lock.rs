@@ -111,7 +111,10 @@ impl AutomationLock {
                     let _ = fs::remove_file(&self.path);
                     return Err(format!("automation lock write failed: {e}"));
                 }
-                tracing::debug!("[automation-lock] acquired for '{tool}' (pid={})", record.pid);
+                tracing::debug!(
+                    "[automation-lock] acquired for '{tool}' (pid={})",
+                    record.pid
+                );
                 Ok(LockGuard {
                     path: self.path.clone(),
                 })
@@ -207,9 +210,14 @@ mod tests {
         let lock = temp_lock("busy");
         let _ = fs::remove_file(lock.path());
         let _guard = lock.acquire("desktop_mouse").expect("first acquire ok");
-        let err = lock.acquire("browser_click").expect_err("second acquire busy");
+        let err = lock
+            .acquire("browser_click")
+            .expect_err("second acquire busy");
         assert!(err.contains("busy"), "error mentions busy: {err}");
-        assert!(err.contains("desktop_mouse"), "error names holder tool: {err}");
+        assert!(
+            err.contains("desktop_mouse"),
+            "error names holder tool: {err}"
+        );
     }
 
     #[test]
@@ -224,7 +232,9 @@ mod tests {
             expires_at: unix_now().saturating_sub(1), // already expired
         };
         fs::write(lock.path(), serde_json::to_string(&stale).unwrap()).unwrap();
-        let guard = lock.acquire("browser_snapshot").expect("stale lock reclaimed");
+        let guard = lock
+            .acquire("browser_snapshot")
+            .expect("stale lock reclaimed");
         // New holder must be this process.
         let rec = read_lock_record(lock.path()).expect("record readable");
         assert_eq!(rec.pid, std::process::id());
