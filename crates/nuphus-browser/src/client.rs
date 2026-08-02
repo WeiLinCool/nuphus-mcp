@@ -310,6 +310,17 @@ const ACTIONABILITY_POLL_MS: u64 = 100;
 /// use (page re-rendered): retries × interval, then the original error surfaces.
 const STALE_NODE_RETRIES: u32 = 3;
 const STALE_NODE_RETRY_MS: u64 = 200;
+/// Bounded wait for the main frame's `load` event inside `Page::goto`.
+/// chromiumoxide's navigation-aware `goto` holds the `Page.navigate` response
+/// until the frame's `load` lifecycle event (hard `REQUEST_TIMEOUT` = 30s), so a
+/// page with a hanging/blocked subresource would hang the whole tool on the
+/// outer 30s guard. Wait this long, then degrade to polling
+/// `document.readyState` (DOM is usable at "interactive").
+const NAVIGATE_LOAD_WAIT_SECS: u64 = 10;
+/// Fallback deadline (after the load-event wait) for the DOM to become
+/// interactive. Combined with NAVIGATE_LOAD_WAIT_SECS it stays well inside the
+/// tool-level 30s guard (10s + 12s = 22s).
+const NAVIGATE_DOM_READY_SECS: u64 = 12;
 
 /// Recursively walk the AX tree node array, collecting interactive nodes.
 ///
@@ -821,16 +832,46 @@ impl BrowserClient {
         let page = self.get_or_create_page().await?;
         let page_guard = page.lock().await;
 
-        page_guard
-            .goto(url)
+        let before_url = page_guard
+            .url()
             .await
-            .map_err(|e| BrowserError::Navigation(e.to_string()))?;
+            .unwrap_or_default()
+            .unwrap_or_else(|| "about:blank".to_string());
 
-        // Wait for page to finish loading
-        page_guard
-            .wait_for_navigation()
-            .await
-            .map_err(|e| BrowserError::Navigation(e.to_string()))?;
+        // chromiumoxide's `Page::goto` is navigation-aware: the `Page.navigate`
+        // command response is held until the main frame's `load` lifecycle event
+        // (handler `on_target_message` → `NavigationInProgress`), with a hard
+        // `REQUEST_TIMEOUT` (30s) deadline. A page with a hanging/blocked
+        // subresource never fires `load`, so goto would otherwise hang the whole
+        // tool on the 30s guard with a confusing generic timeout. Bound it
+        // ourselves; if the load event is blocked, degrade to polling
+        // `document.readyState` — the DOM is usable at "interactive" even while
+        // subresources are still pending.
+        let mut page_still_loading = false;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(NAVIGATE_LOAD_WAIT_SECS),
+            page_guard.goto(url),
+        )
+        .await
+        {
+            // goto() only resolves once the frame's `load` lifecycle completed,
+            // so a successful goto needs no further load wait.
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                // Navigation rejected outright (invalid URL / net::ERR_*): surface it.
+                return Err(BrowserError::Navigation(e.to_string()));
+            }
+            Err(_elapsed) => {
+                if !Self::wait_for_dom_usable(&page_guard, &before_url).await? {
+                    return Err(BrowserError::Navigation(format!(
+                        "navigation timed out after {}s — page did not finish loading \
+                         (unreachable host, blocked subresources, or very slow)",
+                        NAVIGATE_LOAD_WAIT_SECS + NAVIGATE_DOM_READY_SECS
+                    )));
+                }
+                page_still_loading = true;
+            }
+        }
 
         let title = page_guard
             .get_title()
@@ -838,7 +879,14 @@ impl BrowserClient {
             .unwrap_or_default()
             .unwrap_or_else(|| "Untitled".to_string());
 
-        Ok(format!("Navigated to: {} | Title: {}", url, title))
+        if page_still_loading {
+            Ok(format!(
+                "Navigated to: {} | Title: {} (page still loading subresources)",
+                url, title
+            ))
+        } else {
+            Ok(format!("Navigated to: {} | Title: {}", url, title))
+        }
     }
 
     /// Get page snapshot — tries Accessibility.getFullAXTree first, falls back to JS DOM traversal.
@@ -1859,6 +1907,49 @@ impl BrowserClient {
         Ok(format!("Navigated forward to: {}", url))
     }
 
+    /// Poll the page until the navigation commits and the new document becomes
+    /// usable (`document.readyState` at least `"interactive"`), or the deadline
+    /// passes. Returns `true` if the DOM became usable, `false` on timeout.
+    ///
+    /// Used as the degradation path when `goto()` can't complete: `goto()` waits
+    /// for the `load` event, which never fires while a subresource hangs, so the
+    /// DOM may already be parsed and usable even though the page "isn't loaded".
+    /// `"interactive"` only requires the parser to finish.
+    ///
+    /// `before_url` distinguishes the new document from a stale previous page
+    /// (whose readyState is also `"complete"`): a committed navigation changes
+    /// the URL. `saw_loading` additionally covers same-URL navigations (reload),
+    /// where readyState cycles through `"loading"` but the URL is unchanged.
+    /// Transient evaluate failures (execution context destroyed mid-navigation)
+    /// mean "not committed yet" — never treated as the `"loading"` signal.
+    async fn wait_for_dom_usable(page: &Page, before_url: &str) -> Result<bool, BrowserError> {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(NAVIGATE_DOM_READY_SECS);
+        let mut saw_loading = false;
+        loop {
+            let ready = match page.evaluate("document.readyState").await {
+                Ok(res) => res
+                    .into_value::<serde_json::Value>()
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
+            if ready == "loading" {
+                saw_loading = true;
+            }
+            let url = page.url().await.unwrap_or_default().unwrap_or_default();
+            let dom_ready = ready == "interactive" || ready == "complete";
+            if dom_ready && (url != before_url || saw_loading) {
+                return Ok(true);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// Wait until the page URL differs from `before`.
     ///
     /// `history.back()` / `history.forward()` are async JS: the `evaluate` returns before the
@@ -2367,6 +2458,103 @@ setTimeout(function(){ document.getElementById('will-show').style.display = 'blo
 
         client.close().await.ok();
         cleanup_profile("probe_regression");
+    }
+
+    /// Regression: navigate must not hang until the tool-level 30s timeout on a
+    /// page whose `load` event is permanently blocked by a hanging subresource.
+    ///
+    /// chromiumoxide's `Page::goto` holds the `Page.navigate` response until the
+    /// main frame's `load` lifecycle event (with a 30s deadline). An `<img>` that
+    /// receives response headers but never completes its body keeps the frame
+    /// loading forever, so `load` never fires. The fix bounds the goto wait and
+    /// degrades to polling `document.readyState` — the DOM is usable at
+    /// "interactive" even while subresources are still pending. Navigate must
+    /// return success (with a "still loading" note) far below the old 30s hard
+    /// timeout.
+    #[tokio::test]
+    #[ignore = "launches real Chrome; requires Chrome installed locally"]
+    async fn navigate_slow_page_does_not_hang_30s() {
+        // Mini HTTP server: `/` serves the test page over http (avoids Chrome's
+        // mixed-content fast-fail on file:// + http img), and `/hang` sends
+        // response headers declaring a huge Content-Length but never the body, so
+        // the img request stays pending forever and the `load` event is blocked.
+        // `Connection: close` on `/` forces a fresh connection for the img so the
+        // hanging response can't be affected by the main page's connection.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind hang listener");
+        let port = listener.local_addr().expect("addr").port();
+        let hang_html = format!(
+            "<!doctype html><html><body><h1 id='main'>slow</h1>\
+             <img src='http://127.0.0.1:{port}/hang'></body></html>"
+        );
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let hang_html = hang_html.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await; // request headers
+                    if buf.starts_with(b"GET /hang") {
+                        // Declare 1GB but never send the body → request stays pending.
+                        let _ = sock
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000000\r\n\r\n")
+                            .await;
+                        std::future::pending::<()>().await; // hold the socket open
+                    } else {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\nContent-Type: text/html\r\n\r\n{}",
+                            hang_html.len(),
+                            hang_html
+                        );
+                        let _ = sock.write_all(resp.as_bytes()).await;
+                    }
+                });
+            }
+        });
+
+        let mut client = isolated_client("navigate_slow_page");
+        client.launch(true).await.expect("launch");
+
+        let start = std::time::Instant::now();
+        let result = client.navigate(&format!("http://127.0.0.1:{port}/")).await;
+        let elapsed = start.elapsed();
+
+        let msg = result.expect("slow page should still navigate successfully");
+        assert!(
+            elapsed.as_secs() < 25,
+            "navigate took too long on a slow page: {elapsed:?} — goto bound or readyState fallback not working"
+        );
+        assert!(msg.starts_with("Navigated to"), "unexpected result: {msg}");
+        // The load event is blocked, so the degradation path must have run.
+        assert!(
+            msg.contains("still loading"),
+            "expected the 'still loading subresources' fallback note: {msg}"
+        );
+
+        // The DOM is usable even though the page is still loading: the heading is
+        // parsed and reachable even though the `load` event never fired.
+        let page = client.page.as_ref().expect("page exists").clone();
+        {
+            let guard = page.lock().await;
+            let heading = guard
+                .evaluate("document.querySelector('#main') ? document.querySelector('#main').textContent : ''")
+                .await
+                .ok()
+                .and_then(|r| r.into_value::<serde_json::Value>().ok())
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            assert_eq!(
+                heading, "slow",
+                "DOM should be parsed and reachable on slow page"
+            );
+        }
+
+        client.close().await.ok();
+        cleanup_profile("navigate_slow_page");
     }
 
     /// wait_for three states: attached hits immediately; visible waits for the element to
