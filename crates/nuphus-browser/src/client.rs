@@ -605,23 +605,37 @@ impl BrowserClient {
             config_builder = config_builder.with_head();
         }
 
-        // Common launch arguments
-        let config = config_builder
+        // ── Launch arguments ──
+        // Common flags, present in both modes. `--disable-blink-features=AutomationControlled`
+        // stops Chrome from exposing the CDP automation state (`navigator.webdriver`), which a
+        // real user's browser never sets — the single most flaggable signature of automation.
+        config_builder = config_builder
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
-            .arg("--disable-default-apps")
-            .arg("--disable-popup-blocking")
-            .arg("--disable-translate")
-            .arg("--disable-extensions")
-            .arg("--disable-gpu")
-            .arg("--disable-background-networking")
-            .arg("--disable-sync")
-            .arg("--disable-background-timer-throttling")
-            .arg("--disable-backgrounding-occluded-windows")
-            .arg("--disable-renderer-backgrounding")
-            .arg("--disable-features=TranslateUI")
+            .arg("--disable-blink-features=AutomationControlled")
+            .arg("--disable-popup-blocking") // keep `window.open` flows from being lost mid-workflow
             .arg("--metrics-recording-only")
-            .arg("--safebrowsing-disable-auto-update")
+            .arg("--safebrowsing-disable-auto-update");
+
+        // Headed mode is a real, user-visible Chrome: keep its fingerprint indistinguishable from
+        // a normal install (real GPU/WebGL, extensions present, background features on). The
+        // flags below are headless-only stability/perf optimizations that leak automation
+        // signals when carried into headed mode.
+        if headless {
+            config_builder = config_builder
+                .arg("--disable-default-apps")
+                .arg("--disable-translate")
+                .arg("--disable-extensions")
+                .arg("--disable-gpu")
+                .arg("--disable-background-networking")
+                .arg("--disable-sync")
+                .arg("--disable-background-timer-throttling")
+                .arg("--disable-backgrounding-occluded-windows")
+                .arg("--disable-renderer-backgrounding")
+                .arg("--disable-features=TranslateUI");
+        }
+
+        let config = config_builder
             .build()
             .map_err(|e| BrowserError::Config(e.to_string()))?;
 
@@ -2156,10 +2170,11 @@ impl BrowserClient {
         let page_arc = Arc::new(Mutex::new(page));
         self.page = Some(page_arc);
 
-        // Enable DOM domain for the new tab
+        // Enable DOM domain for the new tab and register the anti-detection script.
         {
             let page_guard = self.page.as_ref().unwrap().lock().await;
             let _ = page_guard.execute(DOMEnable::default()).await;
+            let _ = Self::inject_anti_detection(&page_guard).await;
         }
 
         let url_str = url.unwrap_or("about:blank");
@@ -2249,6 +2264,37 @@ impl BrowserClient {
 
     // ── Internal helper methods ──
 
+    /// Register the anti-detection script on a page so CDP-driven automation is not
+    /// flagged as a bot — the failure mode that turns into CAPTCHA walls mid-workflow
+    /// (Nuphus workflows are explicit, user-authorized operations, never scraping).
+    ///
+    /// CDP-launched Chrome exposes `navigator.webdriver = true`; a real user's browser
+    /// never sets it. `Page.addScriptToEvaluateOnNewDocument` overrides it before any
+    /// frame script runs (on every subsequent navigation), and an immediate `Runtime.evaluate`
+    /// covers the document that is already loaded at attach time.
+    async fn inject_anti_detection(page: &Page) -> Result<(), BrowserError> {
+        use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+
+        const STEALTH_SOURCE: &str = r#"
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+                configurable: true,
+            });
+        "#;
+
+        // Apply to every future document, before its scripts run.
+        page.execute(AddScriptToEvaluateOnNewDocumentParams::new(STEALTH_SOURCE))
+            .await
+            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+
+        // Also neutralize the document that is already loaded right now.
+        page.evaluate(STEALTH_SOURCE)
+            .await
+            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn get_or_create_page(&mut self) -> Result<Arc<Mutex<Page>>, BrowserError> {
         if let Some(page) = &self.page {
             return Ok(page.clone());
@@ -2266,9 +2312,11 @@ impl BrowserClient {
         self.page = Some(page_arc.clone());
 
         // Enable DOM domain (required for DOM.querySelector / resolveNode / describeNode)
+        // and register the anti-detection script (covers every page this instance creates).
         {
             let page_guard = page_arc.lock().await;
             let _ = page_guard.execute(DOMEnable::default()).await;
+            let _ = Self::inject_anti_detection(&page_guard).await;
         }
 
         // Configure download behavior on first page
@@ -2373,6 +2421,38 @@ mod tests {
     // ── Integration tests (real Chrome, #[ignore]) ──
     // Run: cargo test --lib browser::client::tests:: -- --ignored --test-threads=1
     // (single-threaded: multiple tests share the same Chrome profile; parallel runs collide on SingletonLock)
+
+    /// Anti-detection: after `inject_anti_detection`, `navigator.webdriver` must not be
+    /// exposed as the CDP-forced `true` — the failure mode that turns into CAPTCHA walls
+    /// mid-workflow for user-authorized automation.
+    #[tokio::test]
+    #[ignore = "launches real Chrome; requires Chrome installed locally"]
+    async fn anti_detection_webdriver_is_hidden() {
+        let mut client = isolated_client("webdriver");
+        client.launch(true).await.expect("launch headless");
+        client
+            .navigate(&fixture_url(
+                "webdriver",
+                "<!doctype html><html><body>probe</body></html>",
+            ))
+            .await
+            .expect("navigate");
+
+        // Plain CDP-driven Chrome would report `true` here; after injection the getter
+        // returns undefined, so the script reports `hidden`.
+        let value = client
+            .evaluate(
+                "typeof navigator.webdriver === 'undefined' ? 'hidden' : String(navigator.webdriver)",
+            )
+            .await
+            .expect("evaluate navigator.webdriver");
+
+        assert_eq!(
+            value.as_str().map(str::to_string),
+            Some("hidden".to_string()),
+            "navigator.webdriver should be hidden after anti-detection injection, got: {value}"
+        );
+    }
 
     /// Test client with an isolated profile: avoids sharing the running Nuphus App's
     /// browser_profile_v2 (try_attach would connect to the App instance and hang navigate).
