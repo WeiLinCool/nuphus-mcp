@@ -10,20 +10,16 @@
 
 use serde_json::Value;
 
-/// Whether the tool is a "write operation" (changes system/page state).
-/// `desktop_mouse` is differentiated by action: position is read, everything else is write.
-pub fn is_write_tool(name: &str, args: &Value) -> bool {
-    if name == "desktop_mouse" {
-        let action = args
-            .get("action")
-            .and_then(Value::as_str)
-            .unwrap_or("position");
-        return action != "position";
-    }
+/// Write-classification for tools whose write-ness does NOT depend on arguments.
+///
+/// `desktop_mouse` is the sole exception (its `action` decides read vs write) and is
+/// handled explicitly in `is_write_tool` / `is_write_tool_schema`. This is the single
+/// source of truth shared by the runtime check and the schema declaration.
+fn is_write_tool_name_only(name: &str) -> bool {
     matches!(
         name,
         // desktop writes
-        "desktop_mouse" | "desktop_mouse_drag" | "desktop_input" | "desktop_window_activate"
+        "desktop_mouse_drag" | "desktop_input" | "desktop_window_activate"
             | "desktop_window_screenshot" | "desktop_window_move" | "desktop_window_resize"
             | "desktop_screenshot" | "desktop_clipboard_write"
             | "desktop_clipboard_clean"
@@ -34,6 +30,35 @@ pub fn is_write_tool(name: &str, args: &Value) -> bool {
             | "browser_import_cookies" | "browser_upload" | "browser_new_tab"
             | "browser_switch_tab"
     )
+}
+
+/// Whether the tool is a "write operation" (changes system/page state) for a GIVEN
+/// argument set. `desktop_mouse` is differentiated by action: position is read,
+/// everything else is write.
+pub fn is_write_tool(name: &str, args: &Value) -> bool {
+    if name == "desktop_mouse" {
+        let action = args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("position");
+        return action != "position";
+    }
+    is_write_tool_name_only(name)
+}
+
+/// Schema-side counterpart of `is_write_tool`: whether a tool's `inputSchema` must
+/// declare the `confirm` property.
+///
+/// Strict-confirm mode requires write tools to carry `"confirm": true` at runtime, and
+/// spec-compliant MCP clients strip arguments that are not declared in `inputSchema`.
+/// A tool needs `confirm` declared iff the runtime *may* require confirmation for some
+/// argument set. For `desktop_mouse` that means always (action can be click/scroll/…),
+/// mirroring the conservative treatment in `annotations_for`.
+pub fn is_write_tool_schema(name: &str) -> bool {
+    if name == "desktop_mouse" {
+        return true;
+    }
+    is_write_tool_name_only(name)
 }
 
 /// MCP Tool `annotations` (spec field, output of tools/list).

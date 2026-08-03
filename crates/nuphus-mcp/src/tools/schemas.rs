@@ -38,13 +38,31 @@ fn tool_def(
     properties: Value,
     required: &[&str],
 ) -> ToolDef {
+    let Value::Object(mut props) = properties else {
+        panic!("tool '{name}': properties must be a JSON object");
+    };
+    // Strict-confirm mode gates write tools on an explicit `"confirm": true` argument
+    // (security::check_write_confirmation). Declare `confirm` in the schema for every
+    // tool the runtime *may* classify as a write — otherwise spec-compliant clients
+    // strip unknown arguments before the runtime ever sees them. The set is derived
+    // from the same source of truth as the runtime check (`is_write_tool_schema`),
+    // so the two cannot drift apart again.
+    if crate::security::is_write_tool_schema(name) {
+        props.insert(
+            "confirm".to_string(),
+            json!({
+                "type": "boolean",
+                "description": "Set to true to explicitly confirm this write operation (required in strict-confirm mode)"
+            }),
+        );
+    }
     let required: Vec<String> = required.iter().map(|s| s.to_string()).collect();
     ToolDef {
         name,
         description,
         input_schema: json!({
             "type": "object",
-            "properties": properties,
+            "properties": props,
             "required": required,
         }),
     }
@@ -367,4 +385,162 @@ fn browser_tools() -> Vec<ToolDef> {
             &["index"],
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::{is_write_tool, is_write_tool_schema, SecurityPolicy};
+
+    /// Argument samples exercising each runtime classification branch. For
+    /// `desktop_mouse` we read the action enum straight from the schema so this stays
+    /// in sync if the enum changes.
+    fn representative_args(tool: &ToolDef) -> Vec<Value> {
+        let mut args = vec![json!({})];
+        if tool.name == "desktop_mouse" {
+            if let Some(enum_vals) = tool.input_schema["properties"]["action"]
+                .get("enum")
+                .and_then(Value::as_array)
+            {
+                for val in enum_vals {
+                    if let Some(action) = val.as_str() {
+                        args.push(json!({ "action": action }));
+                    }
+                }
+            }
+        }
+        args
+    }
+
+    /// Simulate a spec-compliant MCP client: drop any argument not declared in
+    /// `inputSchema.properties` before it reaches the server (this is exactly what
+    /// made strict-confirm mode deadlock before the fix — `confirm` was stripped).
+    fn strip_to_declared(schema: &Value, args: &Value) -> Value {
+        let props = schema.get("properties").and_then(Value::as_object);
+        let mut filtered = Map::new();
+        if let Some(obj) = args.as_object() {
+            for (k, v) in obj {
+                if props.map_or(true, |p| p.contains_key(k)) {
+                    filtered.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Value::Object(filtered)
+    }
+
+    #[test]
+    fn write_tools_declare_confirm() {
+        let tools = all_tools();
+        let write_count = tools
+            .iter()
+            .filter(|t| is_write_tool_schema(t.name))
+            .count();
+        // Regression anchor from issue #1: exactly 25 write tools.
+        assert_eq!(write_count, 25, "expected 25 write tools");
+
+        for tool in &tools {
+            let props = tool.input_schema["properties"]
+                .as_object()
+                .expect("schema must have properties object");
+            let required = tool.input_schema["required"]
+                .as_array()
+                .expect("schema must have required array");
+            let has_confirm = props.contains_key("confirm");
+
+            if is_write_tool_schema(tool.name) {
+                assert!(
+                    has_confirm,
+                    "write tool '{}' must declare `confirm` in inputSchema",
+                    tool.name
+                );
+                assert_eq!(props["confirm"]["type"], "boolean");
+                assert!(
+                    !required.iter().any(|r| r == "confirm"),
+                    "`confirm` must NOT be required for '{}' (absence is what triggers strict-mode rejection)",
+                    tool.name
+                );
+            } else {
+                assert!(
+                    !has_confirm,
+                    "read tool '{}' must not declare `confirm`",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// Anti-drift guard: the schema declaration and the runtime write classification
+    /// must agree. A tool declares `confirm` iff the runtime *can* require it for some
+    /// argument set — so a future write tool that misses one of the two lists is caught.
+    #[test]
+    fn confirm_declaration_matches_runtime_predicate() {
+        for tool in all_tools() {
+            let runtime_write = representative_args(&tool)
+                .iter()
+                .any(|a| is_write_tool(tool.name, a));
+            assert_eq!(
+                is_write_tool_schema(tool.name),
+                runtime_write,
+                "tool '{}': schema `confirm` declaration must agree with runtime write classification",
+                tool.name
+            );
+        }
+    }
+
+    /// End-to-end reproduction of issue #1: with a spec-compliant client stripping
+    /// undeclared arguments, a write tool must still accept `"confirm": true`, and
+    /// reject a write without it — under strict-confirm mode.
+    #[test]
+    fn strict_confirm_survives_spec_client_schema_filtering() {
+        let policy = SecurityPolicy {
+            strict_confirm: true,
+        };
+        let mut write_tools_checked = 0;
+
+        for tool in all_tools() {
+            let schema = &tool.input_schema;
+            let base = representative_args(&tool)
+                .into_iter()
+                .find(|a| is_write_tool(tool.name, a))
+                .unwrap_or_else(|| json!({}));
+
+            if !is_write_tool_schema(tool.name) {
+                continue;
+            }
+
+            let mut with_confirm = base.clone();
+            if let Value::Object(m) = &mut with_confirm {
+                m.insert("confirm".to_string(), Value::Bool(true));
+            }
+            let stripped = strip_to_declared(schema, &with_confirm);
+            assert_eq!(
+                stripped.get("confirm").and_then(Value::as_bool),
+                Some(true),
+                "`confirm` must survive schema stripping for '{}'",
+                tool.name
+            );
+            assert!(
+                policy
+                    .check_write_confirmation(tool.name, &stripped)
+                    .is_ok(),
+                "write tool '{}' must pass strict confirmation with confirm:true",
+                tool.name
+            );
+
+            let stripped_without = strip_to_declared(schema, &base);
+            assert!(
+                policy
+                    .check_write_confirmation(tool.name, &stripped_without)
+                    .is_err(),
+                "write tool '{}' must be rejected without confirm:true",
+                tool.name
+            );
+            write_tools_checked += 1;
+        }
+
+        assert_eq!(
+            write_tools_checked, 25,
+            "expected all 25 write tools to be exercised"
+        );
+    }
 }
