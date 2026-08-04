@@ -511,35 +511,37 @@ impl BrowserClient {
 
     /// Launch browser.
     ///
-    /// Idempotent: returns immediately if already launched (connection alive) and the current mode
-    /// satisfies the request. A dead connection (shared Chrome killed by an external process) is
-    /// automatically reset and reconnected. Headed is a functional superset —
+    /// Idempotent: returns immediately if already launched (connection confirmed alive) and the
+    /// current mode satisfies the request. Headed is a functional superset —
     /// a headed instance also serves headless requests; a headless instance receives a headed
     /// request and is closed and relaunched as an upgrade (browser tools require a user-visible window).
+    ///
+    /// A dead connection (shared Chrome killed by an external process) is NOT diagnosed here:
+    /// the liveness probe only answers "definitely alive?". A probe timeout/failure is not proof
+    /// of death — CDP event floods (complex or slow-loading pages) or a busy browser can delay
+    /// the probe response. Resetting on a false negative would destroy the current page state,
+    /// and falling through could even kill a live shared Chrome via lock cleanup + hard relaunch.
+    /// Real death is proven only by a failed operation with a connection-class error;
+    /// [`execute_with_reconnect`](Self::execute_with_reconnect) then resets, relaunches and
+    /// retries the operation once.
     pub async fn launch(&mut self, headless: bool) -> Result<(), BrowserError> {
-        // Idempotency + dead-connection probe: a Chrome shared across processes (same profile)
-        // may be killed by an external process. In that case self.browser is still Some but the
-        // underlying CDP handler's receiver is gone — without the probe we would permanently
-        // return Ok(()), and every later call would fail with "receiver is gone". On probe
-        // failure we reset to None (close() on a dead connection may error spuriously) and
-        // fall through to the attach → launch reconnect path.
+        // Idempotency + liveness probe. self.browser may be Some while the underlying CDP
+        // handler is gone (shared Chrome killed by an external process); without any check we
+        // would return Ok(()) and every later call would fail with "receiver is gone". The
+        // probe confirms the happy path cheaply; a non-confirmation leaves the existing
+        // connection in place and lets the operation itself surface a connection error.
         if self.browser.is_some() {
-            if self.browser_connection_alive().await {
+            if self.is_connection_alive().await {
                 let upgrade = self.launched_headless == Some(true) && !headless;
                 if !upgrade {
                     return Ok(()); // Already launched, current mode satisfies the request
                 }
                 self.close().await?;
             } else {
-                tracing::warn!("[Browser] existing CDP connection dead, resetting for reconnect");
-                // Release local state; if the instance was launched by this process, reap the child.
-                self.browser = None;
-                self.page = None;
-                self.launched_headless = None;
-                if let Some(mut child) = self.child_process.take() {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                }
+                tracing::debug!(
+                    "[Browser] liveness probe did not confirm alive; trusting existing connection"
+                );
+                return Ok(());
             }
         }
 
@@ -788,7 +790,7 @@ impl BrowserClient {
     /// which overwrites the live `Target` entries and drops their `PageHandle`s — the
     /// command channel every existing `Page` sends on. A probe on an established
     /// connection would therefore kill every open page while still returning "alive".
-    async fn browser_connection_alive(&self) -> bool {
+    pub async fn is_connection_alive(&self) -> bool {
         let browser_arc = match self.browser.as_ref() {
             Some(arc) => arc,
             None => return false,
@@ -2157,6 +2159,46 @@ impl BrowserClient {
         Ok(())
     }
 
+    /// Reconnect after a confirmed dead CDP connection: reset local state, relaunch a fresh
+    /// browser (same window mode), and restore a usable `about:blank` page so the next
+    /// operation does not fail with `NoPage`. Callers (tool executors) should probe liveness
+    /// first and only invoke this when the connection is genuinely dead — a slow page with a
+    /// healthy connection must NOT be torn down.
+    pub async fn reconnect(&mut self) -> Result<(), BrowserError> {
+        let headless_mode = self.launched_headless.unwrap_or(false);
+        self.browser = None;
+        self.page = None;
+        self.launched_headless = None;
+        self.snapshot_backend_ids.clear();
+        self.helpers_injected = false;
+        if let Some(mut child) = self.child_process.take() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        self.launch(headless_mode).await?;
+        // Restore a usable page so page-dependent operations don't hit NoPage after the reset
+        // (the caller's retried operation then targets a blank page; a navigate re-targets it).
+        self.get_or_create_page().await?;
+        Ok(())
+    }
+
+    /// Classify failures caused by a dead CDP connection — the only errors worth a
+    /// reconnect-and-retry. These occur only when the background handler task has actually
+    /// exited (receiver gone / channel closed / websocket dropped), never from a slow page or
+    /// a busy browser, so they are reliable death signals. Business errors (element not found,
+    /// navigation timeout, selector issues) never match.
+    pub fn is_connection_error(err: &BrowserError) -> bool {
+        let msg = err.to_string().to_ascii_lowercase();
+        msg.contains("receiver is gone")
+            || msg.contains("channel closed")
+            || msg.contains("send failed")
+            || msg.contains("connection closed")
+            || msg.contains("connection reset")
+            || msg.contains("cdp connect failed")
+            || msg.contains("websocket")
+            || msg.contains("disconnected")
+    }
+
     /// New tab
     pub async fn new_tab(&mut self, url: Option<&str>) -> Result<String, BrowserError> {
         let browser = self.browser.as_ref().ok_or(BrowserError::NotStarted)?;
@@ -2418,6 +2460,39 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn connection_error_classification() {
+        // CDP handler gone / channel dropped → reconnectable
+        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
+            "send failed because receiver is gone".to_string()
+        )));
+        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
+            "Browser 'browser_extract' failed: Execution error: send failed because receiver is gone"
+                .to_string()
+        )));
+        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
+            "channel closed while waiting for response".to_string()
+        )));
+        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
+            "connection closed unexpectedly".to_string()
+        )));
+        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
+            "CDP connect failed: ws error".to_string()
+        )));
+        // Business errors → NOT reconnectable (must not mask the real problem)
+        assert!(!BrowserClient::is_connection_error(&BrowserError::ElementNotFound(
+            "@9".to_string(),
+            "@9 out of range (max @4)".to_string()
+        )));
+        assert!(!BrowserClient::is_connection_error(&BrowserError::Execution(
+            "Click on '#x' failed: selector not found".to_string()
+        )));
+        assert!(!BrowserClient::is_connection_error(&BrowserError::Navigation(
+            "navigation timed out after 22s — page did not finish loading (unreachable host, blocked subresources, or very slow)".to_string()
+        )));
+        assert!(!BrowserClient::is_connection_error(&BrowserError::NoPage));
+    }
+
     // ── Integration tests (real Chrome, #[ignore]) ──
     // Run: cargo test --lib browser::client::tests:: -- --ignored --test-threads=1
     // (single-threaded: multiple tests share the same Chrome profile; parallel runs collide on SingletonLock)
@@ -2452,6 +2527,75 @@ mod tests {
             Some("hidden".to_string()),
             "navigator.webdriver should be hidden after anti-detection injection, got: {value}"
         );
+    }
+
+    /// Connection-level self-healing: after the Chrome child process is killed (an externally
+    /// killed / crashed browser), a direct operation hangs instead of failing fast (Windows
+    /// half-open websocket), the liveness probe reports the dead connection, and `reconnect()`
+    /// resets + relaunches + restores a usable page so the retried operation succeeds — the
+    /// caller observes recovery instead of a dead-connection error. This is the exact failure
+    /// mode of "receiver is gone" that users hit mid-workflow.
+    #[tokio::test]
+    #[ignore = "launches real Chrome; requires Chrome installed locally"]
+    async fn reconnect_recovers_dead_connection() {
+        let mut client = isolated_client("reconnect");
+        client.launch(true).await.expect("launch headless");
+        client
+            .navigate(&fixture_url(
+                "reconnect",
+                "<!doctype html><html><body>alive</body></html>",
+            ))
+            .await
+            .expect("navigate");
+
+        // Prove the connection works before killing it.
+        assert!(client.snapshot(false, None).await.is_ok());
+
+        // Kill the Chrome child process to simulate an externally-killed browser.
+        let mut child = client.child_process.take().expect("child process exists");
+        child.kill().await.expect("kill chrome");
+        child.wait().await.expect("chrome exited");
+
+        // On Windows a killed Chrome does NOT surface as a fast error: the handler may block
+        // on the half-open websocket, so a direct operation hangs (verified below) instead of
+        // failing with "receiver is gone". This is exactly why the self-healing path must
+        // combine timeout + liveness probe + reconnect.
+        let hung = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.snapshot(false, None),
+        )
+        .await;
+        assert!(
+            hung.is_err(),
+            "direct snapshot on dead connection should hang past the probe window"
+        );
+        // The liveness probe confirms the connection is gone...
+        assert!(
+            !client.is_connection_alive().await,
+            "liveness probe must report the dead connection"
+        );
+
+        // ...and reconnect() resets, relaunches, restores a blank page; the retried
+        // operation succeeds instead of failing with NoPage / dead connection.
+        client.reconnect().await.expect("reconnect after dead connection");
+        let recovered = client.snapshot(false, None).await;
+        assert!(
+            recovered.is_ok(),
+            "operation after reconnect should succeed: {:?}",
+            recovered.err()
+        );
+
+        // The new instance is usable for real work.
+        client
+            .navigate(&fixture_url(
+                "reconnect",
+                "<!doctype html><html><body>again</body></html>",
+            ))
+            .await
+            .expect("navigate after reconnect");
+
+        let _ = client.close().await;
+        cleanup_profile("reconnect");
     }
 
     /// Test client with an isolated profile: avoids sharing the running Nuphus App's

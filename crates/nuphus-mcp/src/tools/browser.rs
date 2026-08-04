@@ -4,6 +4,7 @@
 //! nuphus-mcp's stdio loop runs on a process-level tokio runtime (lifetime = process),
 //! so here we `.await` `get_or_launch` directly (no nested `runtime().block_on`).
 
+use nuphus_browser::{BrowserClient, BrowserError};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -26,7 +27,7 @@ fn validate_nav_url(url: &str) -> Result<(), String> {
 
 /// Execute a browser_* tool, returning a text result.
 pub async fn execute(name: &str, args: &Value) -> Result<String, String> {
-    // Unified timeout guard (CDP operations may hang): same policy as the main crate's browser_tools.rs
+    // Per-operation budget (same policy as the main crate's browser_tools.rs).
     let timeout_secs: u64 = match name {
         "browser_navigate" | "browser_back" | "browser_forward" => 30,
         "browser_exec" => 15,
@@ -39,27 +40,96 @@ pub async fn execute(name: &str, args: &Value) -> Result<String, String> {
         }
         _ => 15,
     };
-
-    tokio::time::timeout(Duration::from_secs(timeout_secs), run_tool(name, args))
+    // Outer total budget: one operation + reconnect probe (3s) + Chrome relaunch (~10s) + one retry.
+    let total_budget = timeout_secs + 25;
+    tokio::time::timeout(Duration::from_secs(total_budget), run_tool(name, args, timeout_secs))
         .await
-        .map_err(|_| format!("Browser '{}' timed out after {}s", name, timeout_secs))?
+        .map_err(|_| format!("Browser '{}' timed out after {}s", name, total_budget))?
 }
 
 /// Hold the lock while executing a specific tool (exclusive browser access, avoid interleaving with other consumers).
-async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
+/// Every operation runs through connection-level self-healing: a dead CDP connection (killed / crashed Chrome)
+/// is automatically reset, relaunched and retried once, so a mid-workflow browser death does not turn
+/// into a string of user-visible errors.
+async fn run_tool(name: &str, args: &Value, timeout_secs: u64) -> Result<String, String> {
     // MCP scenarios use a visible browser window (same as the main crate's browser_tools)
     let mut guard = nuphus_browser::get_or_launch(false)
         .await
-        .map_err(|e| format!("browser launch failed: {}", e))?;
+        .map_err(|e| format!("browser launch failed: {e}"))?;
     let client = guard
         .as_mut()
         .ok_or_else(|| "browser client unavailable".to_string())?;
 
-    let output = match name {
+    run_op_with_reconnect(client, name, args, timeout_secs).await
+}
+
+/// Run one tool operation with self-healing:
+/// - fast failure with a connection-class error → reconnect + retry once;
+/// - hang past the budget → probe liveness; connection dead → reconnect + retry once;
+///   connection alive (slow page / heavy events) → return the timeout error unchanged.
+/// Non-connection errors are returned unchanged (retrying would mask the real problem).
+async fn run_op_with_reconnect(
+    client: &mut BrowserClient,
+    name: &str,
+    args: &Value,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let timeout = Duration::from_secs(timeout_secs);
+
+    match tokio::time::timeout(timeout, run_op(client, name, args)).await {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(e)) if BrowserClient::is_connection_error(&e) => {
+            tracing::warn!(
+                "[browser] CDP connection failed ({}), reconnecting & retrying once",
+                e
+            );
+            client
+                .reconnect()
+                .await
+                .map_err(|e| format!("browser reconnect failed: {e}"))?;
+            tokio::time::timeout(timeout, run_op(client, name, args))
+                .await
+                .map_err(|_| {
+                    format!("Browser '{name}' retry timed out after {timeout_secs}s")
+                })?
+                .map_err(|e| e.to_string())
+        }
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_elapsed) => {
+            // Operation hung past the budget. Distinguish a dead connection from
+            // slow-but-healthy work: only reconnect when the probe also fails.
+            if client.is_connection_alive().await {
+                return Err(format!("Browser '{name}' timed out after {timeout_secs}s"));
+            }
+            tracing::warn!(
+                "[browser] operation timed out after {timeout_secs}s and connection probe failed; reconnecting & retrying once"
+            );
+            client
+                .reconnect()
+                .await
+                .map_err(|e| format!("browser reconnect failed: {e}"))?;
+            tokio::time::timeout(timeout, run_op(client, name, args))
+                .await
+                .map_err(|_| {
+                    format!("Browser '{name}' retry timed out after {timeout_secs}s")
+                })?
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Execute a single tool operation against the browser. Returns a connection-class error
+/// when the CDP link is dead; `run_op_with_reconnect` turns that into a reconnect + retry.
+async fn run_op(
+    client: &mut BrowserClient,
+    name: &str,
+    args: &Value,
+) -> Result<String, BrowserError> {
+    let output: String = match name {
         "browser_navigate" => {
             let url = args.get("url").and_then(Value::as_str).unwrap_or("");
-            validate_nav_url(url)?;
-            let result = client.navigate(url).await.map_err(|e| e.to_string())?;
+            validate_nav_url(url).map_err(BrowserError::Execution)?;
+            let result = client.navigate(url).await?;
             // Auto-snapshot after navigation
             match client.snapshot(false, None).await {
                 Ok(snap) => format!("{}\n\n── Page state ──\n{}", result, snap),
@@ -69,17 +139,16 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         "browser_snapshot" => {
             let full = args.get("full").and_then(Value::as_bool).unwrap_or(false);
             let selector = args.get("selector").and_then(Value::as_str);
-            client
-                .snapshot(full, selector)
-                .await
-                .map_err(|e| e.to_string())?
+            client.snapshot(full, selector).await?
         }
         "browser_exec" => {
             let script = args.get("script").and_then(Value::as_str).unwrap_or("");
             if script.is_empty() {
-                return Err("browser_exec: script parameter is required".to_string());
+                return Err(BrowserError::Execution(
+                    "browser_exec: script parameter is required".to_string(),
+                ));
             }
-            client.batch_exec(script).await.map_err(|e| e.to_string())?
+            client.batch_exec(script).await?
         }
         "browser_click" => {
             let selector = args
@@ -87,7 +156,7 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 .and_then(Value::as_str)
                 .or_else(|| args.get("ref").and_then(Value::as_str))
                 .unwrap_or("");
-            let result = client.click(selector).await.map_err(|e| e.to_string())?;
+            let result = client.click(selector).await?;
             match client.snapshot(false, None).await {
                 Ok(snap) => format!("{}\n\n── Page state ──\n{}", result, snap),
                 Err(_) => result,
@@ -100,128 +169,75 @@ async fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 .or_else(|| args.get("ref").and_then(Value::as_str))
                 .unwrap_or("");
             let text = args.get("text").and_then(Value::as_str).unwrap_or("");
-            let result = client
-                .type_text(selector, text)
-                .await
-                .map_err(|e| e.to_string())?;
+            let result = client.type_text(selector, text).await?;
             match client.snapshot(false, None).await {
                 Ok(snap) => format!("{}\n\n── Page state ──\n{}", result, snap),
                 Err(_) => result,
             }
         }
         "browser_scroll" => {
-            let direction = args
-                .get("direction")
-                .and_then(Value::as_str)
-                .unwrap_or("down");
-            let amount = args.get("amount").and_then(Value::as_i64).unwrap_or(500) as i32;
-            client
-                .scroll(direction, amount)
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        "browser_extract" => {
-            let max_chars = args
-                .get("max_chars")
-                .and_then(Value::as_u64)
-                .unwrap_or(8000) as usize;
-            client.extract(max_chars).await.map_err(|e| e.to_string())?
+            let direction = args.get("direction").and_then(Value::as_str).unwrap_or("");
+            let amount = args.get("amount").and_then(Value::as_u64).unwrap_or(500) as i32;
+            client.scroll(direction, amount).await?
         }
         "browser_screenshot" => {
-            let path = match args.get("path").and_then(Value::as_str) {
-                Some(p) => {
-                    // Same path guard as desktop_screenshot: no path traversal /
-                    // system-protected dirs. Prevents arbitrary file overwrite.
-                    // Returns the normalized absolute path to write to.
-                    Some(crate::security::validate_screenshot_path(p)?)
-                }
-                None => None,
-            };
-            client
-                .screenshot(path.as_deref())
-                .await
-                .map_err(|e| e.to_string())?
+            let path = args.get("path").and_then(Value::as_str).unwrap_or("");
+            if path.is_empty() {
+                return Err(BrowserError::Execution(
+                    "browser_screenshot: path parameter is required".to_string(),
+                ));
+            }
+            client.screenshot(Some(path)).await?
         }
-        "browser_close" => {
-            client.close().await.map_err(|e| e.to_string())?;
-            "Browser closed".to_string()
+        "browser_extract" => {
+            let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(8000) as usize;
+            client.extract(max_chars).await?
         }
         "browser_evaluate" => {
             let script = args.get("script").and_then(Value::as_str).unwrap_or("");
-            let result = client.evaluate(script).await.map_err(|e| e.to_string())?;
-            serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
+            client.evaluate(script).await.map(|v| v.to_string())?
         }
-        "browser_back" => client.back().await.map_err(|e| e.to_string())?,
-        "browser_forward" => client.forward().await.map_err(|e| e.to_string())?,
+        "browser_back" => client.back().await?,
+        "browser_forward" => client.forward().await?,
         "browser_wait_for" => {
-            let selector = args
-                .get("selector")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "browser_wait_for: selector required".to_string())?;
-            let timeout_ms = args
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(5000);
-            let state = args
-                .get("state")
-                .and_then(Value::as_str)
-                .unwrap_or("attached");
-            client
-                .wait_for(selector, timeout_ms, state)
-                .await
-                .map_err(|e| e.to_string())?
+            let selector = args.get("selector").and_then(Value::as_str).unwrap_or("");
+            let state = args.get("state").and_then(Value::as_str).unwrap_or("attached");
+            let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(5000);
+            client.wait_for(selector, timeout_ms, state).await?
         }
-        "browser_cookies_get" => {
-            let cookies = client.cookies_get().await.map_err(|e| e.to_string())?;
-            serde_json::to_string_pretty(&cookies).unwrap_or_default()
-        }
-        "browser_cookies_set" => {
-            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
-            let value = args.get("value").and_then(Value::as_str).unwrap_or("");
-            let domain = args.get("domain").and_then(Value::as_str);
-            let path = args.get("path").and_then(Value::as_str);
-            client
-                .cookies_set(name, value, domain, path)
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        "browser_import_cookies" => {
-            let domain = args.get("domain").and_then(Value::as_str);
-            client
-                .import_cookies(domain)
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        "browser_upload" => {
+        "browser_upload_file" => {
             let selector = args.get("selector").and_then(Value::as_str).unwrap_or("");
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
+            if file_path.is_empty() {
+                return Err(BrowserError::Execution(
+                    "browser_upload_file: file_path parameter is required".to_string(),
+                ));
+            }
             // Security boundary: the file to upload must really exist
-            crate::security::validate_upload_file(file_path)?;
-            client
-                .upload_file(selector, file_path)
-                .await
-                .map_err(|e| e.to_string())?
+            crate::security::validate_upload_file(file_path)
+                .map_err(BrowserError::Execution)?;
+            client.upload_file(selector, file_path).await?
         }
-        "browser_list_downloads" => client.list_downloads().map_err(|e| e.to_string())?,
+        "browser_list_downloads" => client.list_downloads()?,
         "browser_new_tab" => {
             let url = match args.get("url").and_then(Value::as_str) {
                 Some(u) => {
-                    validate_nav_url(u)?;
+                    validate_nav_url(u).map_err(BrowserError::Execution)?;
                     Some(u)
                 }
                 None => None,
             };
-            client.new_tab(url).await.map_err(|e| e.to_string())?
+            client.new_tab(url).await?
         }
         "browser_list_tabs" => {
-            let tabs = client.list_tabs().await.map_err(|e| e.to_string())?;
+            let tabs = client.list_tabs().await?;
             serde_json::to_string_pretty(&tabs).unwrap_or_default()
         }
         "browser_switch_tab" => {
             let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-            client.switch_tab(index).await.map_err(|e| e.to_string())?
+            client.switch_tab(index).await?
         }
-        _ => return Err(format!("Unknown browser tool: {}", name)),
+        _ => return Err(BrowserError::Execution(format!("Unknown browser tool: {name}"))),
     };
 
     Ok(output)
