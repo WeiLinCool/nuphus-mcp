@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-04
+
+### Fixed
+
+- **Browser dispatch regression (P1, release-blocking)**: the connection
+  self-healing refactor (0.1.5) dropped five dispatch arms from
+  `browser.rs` while leaving the tools in `tools/list` — `browser_close`,
+  `browser_cookies_get`, `browser_cookies_set`, `browser_import_cookies`,
+  and `browser_upload` (registered as `browser_upload_file`, so `browser_upload`
+  fell through to "Unknown browser tool"). Affected every 0.1.5 npm binary.
+  All five arms restored and `browser_upload` renamed to match the schema.
+- **Regression guard**: new `dispatch_matches_schema` test asserts that every
+  `browser_*` tool registered in `schemas::all_tools` has a dispatch branch
+  (enforced by `EXECUTABLE_BROWSER_TOOLS`), so a future schema/dispatch drift
+  fails CI instead of surfacing at runtime.
+
 ## [0.1.0] - 2026-07-31
 
 ### Added

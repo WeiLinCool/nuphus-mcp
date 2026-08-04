@@ -8,6 +8,36 @@ use nuphus_browser::{BrowserClient, BrowserError};
 use serde_json::Value;
 use std::time::Duration;
 
+/// Every browser_* tool that has a dispatch branch in `run_op_with_reconnect`.
+///
+/// Keep in sync with the match arms below. A tool registered in `schemas::all_tools`
+/// without a branch here is a schema/dispatch mismatch that only surfaces at
+/// tools/call time as "Unknown browser tool" (regression: 1978fc7 dropped
+/// `browser_close` + 3 cookie tools). The `dispatch_matches_schema` test enforces this.
+pub const EXECUTABLE_BROWSER_TOOLS: &[&str] = &[
+    "browser_navigate",
+    "browser_back",
+    "browser_forward",
+    "browser_snapshot",
+    "browser_exec",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_screenshot",
+    "browser_extract",
+    "browser_close",
+    "browser_cookies_get",
+    "browser_cookies_set",
+    "browser_import_cookies",
+    "browser_evaluate",
+    "browser_wait_for",
+    "browser_upload",
+    "browser_list_downloads",
+    "browser_new_tab",
+    "browser_list_tabs",
+    "browser_switch_tab",
+];
+
 /// Allowed navigation URL schemes. Rejects `file://`, `javascript:`, `data:` etc.,
 /// which could otherwise read local files or bypass page-context sandboxing.
 fn validate_nav_url(url: &str) -> Result<(), String> {
@@ -193,6 +223,25 @@ async fn run_op(
             let max_chars = args.get("max_chars").and_then(Value::as_u64).unwrap_or(8000) as usize;
             client.extract(max_chars).await?
         }
+        "browser_close" => {
+            client.close().await?;
+            "Browser closed".to_string()
+        }
+        "browser_cookies_get" => {
+            let cookies = client.cookies_get().await?;
+            serde_json::to_string_pretty(&cookies).unwrap_or_default()
+        }
+        "browser_cookies_set" => {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+            let value = args.get("value").and_then(Value::as_str).unwrap_or("");
+            let domain = args.get("domain").and_then(Value::as_str);
+            let path = args.get("path").and_then(Value::as_str);
+            client.cookies_set(name, value, domain, path).await?
+        }
+        "browser_import_cookies" => {
+            let domain = args.get("domain").and_then(Value::as_str);
+            client.import_cookies(domain).await?
+        }
         "browser_evaluate" => {
             let script = args.get("script").and_then(Value::as_str).unwrap_or("");
             client.evaluate(script).await.map(|v| v.to_string())?
@@ -205,12 +254,12 @@ async fn run_op(
             let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64).unwrap_or(5000);
             client.wait_for(selector, timeout_ms, state).await?
         }
-        "browser_upload_file" => {
+        "browser_upload" => {
             let selector = args.get("selector").and_then(Value::as_str).unwrap_or("");
             let file_path = args.get("file_path").and_then(Value::as_str).unwrap_or("");
             if file_path.is_empty() {
                 return Err(BrowserError::Execution(
-                    "browser_upload_file: file_path parameter is required".to_string(),
+                    "browser_upload: file_path parameter is required".to_string(),
                 ));
             }
             // Security boundary: the file to upload must really exist
@@ -246,4 +295,28 @@ async fn run_op(
 /// Browser availability probe for tests/docs (does not launch; only checks whether Chrome exists)
 pub fn chrome_available() -> bool {
     nuphus_browser::find_chrome().is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::all_tools;
+    use std::collections::HashSet;
+
+    /// Every browser_* tool registered in schemas must have a dispatch branch.
+    /// Regression guard for 1978fc7, which silently dropped browser_close and
+    /// the three cookie tools from the match while leaving them in tools/list.
+    #[test]
+    fn dispatch_matches_schema() {
+        let registered: HashSet<&str> = all_tools()
+            .iter()
+            .map(|t| t.name)
+            .filter(|n| n.starts_with("browser_"))
+            .collect();
+        let executable: HashSet<&str> = EXECUTABLE_BROWSER_TOOLS.iter().copied().collect();
+        assert_eq!(
+            registered, executable,
+            "schemas::all_tools browser_* tools must exactly match browser.rs dispatch branches"
+        );
+    }
 }

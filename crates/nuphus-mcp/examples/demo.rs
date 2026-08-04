@@ -205,10 +205,12 @@ fn main() -> Result<(), String> {
     )?;
     println!("[3] desktop_screen_size → {}", text_of(&resp));
 
-    // 4. tools/call: harmless browser operation (data URL page, avoids network)
+    // 4. tools/call: harmless browser operation.
+    // URL scheme whitelist only allows http/https (data: was rejected by the
+    // security boundary once the whitelist shipped) — use the standard example domain.
     let resp = client.call(3, "tools/call", serde_json::json!({
         "name": "browser_navigate",
-        "arguments": { "url": "data:text/html,<html><body><h1>nuphus-mcp%20demo</h1></body></html>" }
+        "arguments": { "url": "https://example.com" }
     }))?;
     let nav = text_of(&resp);
     let first_line = nav
