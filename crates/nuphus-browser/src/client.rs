@@ -262,6 +262,9 @@ pub struct BrowserClient {
     download_dir: PathBuf,
     /// Whether download behavior has been configured for this session.
     download_configured: bool,
+    /// Warning recorded when download-dir configuration failed (bubbled into the
+    /// `browser_list_downloads` output — downloads land in Chrome's default dir).
+    download_config_warning: Option<String>,
     /// Chromium child process (managed manually to bypass chromiumoxide's
     /// stderr parsing on Windows).
     child_process: Option<chromiumoxide::async_process::Child>,
@@ -485,6 +488,7 @@ impl BrowserClient {
             helpers_injected: false,
             download_dir,
             download_configured: false,
+            download_config_warning: None,
             child_process: None,
             launched_headless: None,
         })
@@ -504,6 +508,7 @@ impl BrowserClient {
             helpers_injected: false,
             download_dir,
             download_configured: false,
+            download_config_warning: None,
             child_process: None,
             launched_headless: None,
         })
@@ -522,8 +527,9 @@ impl BrowserClient {
     /// the probe response. Resetting on a false negative would destroy the current page state,
     /// and falling through could even kill a live shared Chrome via lock cleanup + hard relaunch.
     /// Real death is proven only by a failed operation with a connection-class error;
-    /// [`execute_with_reconnect`](Self::execute_with_reconnect) then resets, relaunches and
-    /// retries the operation once.
+    /// the self-healing caller (nuphus-mcp's `run_op_with_reconnect`, built on
+    /// [`Self::reconnect`] + [`Self::is_connection_error`]) then resets, relaunches
+    /// and retries the operation once.
     pub async fn launch(&mut self, headless: bool) -> Result<(), BrowserError> {
         // Idempotency + liveness probe. self.browser may be Some while the underlying CDP
         // handler is gone (shared Chrome killed by an external process); without any check we
@@ -844,6 +850,9 @@ impl BrowserClient {
         // Helpers are lost on any navigation (including failed ones that may
         // have partially loaded a new page). Reset early so batch_exec re-injects.
         self.helpers_injected = false;
+        // @N refs point at the pre-navigation page's backendNodeIds — clear them
+        // so a stale ref can never click the wrong element on the new page.
+        self.snapshot_backend_ids.clear();
 
         let page = self.get_or_create_page().await?;
         let page_guard = page.lock().await;
@@ -977,7 +986,7 @@ impl BrowserClient {
         let resp = page_guard
             .execute(cmd)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let nodes = resp
             .result
@@ -1106,7 +1115,7 @@ impl BrowserClient {
         let result = page_guard
             .evaluate(js)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let value: String = result
             .into_value()
@@ -1143,11 +1152,19 @@ impl BrowserClient {
         }
 
         // Legacy @eN ref (JS DOM traversal fallback)
-        if let Some(idx) = selector.strip_prefix("@e") {
+        if let Some(idx_str) = selector.strip_prefix("@e") {
+            // Numeric validation before JS interpolation (the @N branch above
+            // already parses; keep the two ref paths symmetric).
+            let idx: usize = idx_str.parse().map_err(|_| {
+                BrowserError::ElementNotFound(
+                    selector.to_string(),
+                    "@e ref index must be a non-negative integer".to_string(),
+                )
+            })?;
             let js = format!(
                 r#"(function() {{
                     const els = document.querySelectorAll('a, button, input, textarea, select, [onclick]');
-                    const i = parseInt({idx});
+                    const i = {idx};
                     if (!els[i]) throw new Error('Element @e{idx} not found on page');
                     els[i].click();
                     return 'Clicked @e{idx}';
@@ -1157,7 +1174,7 @@ impl BrowserClient {
             page_guard
                 .evaluate(js)
                 .await
-                .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
             return Ok(format!("Clicked @e{}", idx));
         }
 
@@ -1166,7 +1183,7 @@ impl BrowserClient {
         // mouse-event path (which can hang on complex pages or when CDP timing is off)
         let js = Self::actionability_script(selector, "el.click(); return 'clicked';");
         page_guard.evaluate(js).await.map_err(|e| {
-            BrowserError::Execution(format!("Click on '{}' failed: {}", selector, e))
+            cdp_err_ctx(&format!("Click on '{}' failed", selector), e)
         })?;
         Ok(format!("Clicked element: {}", selector))
     }
@@ -1217,13 +1234,13 @@ impl BrowserClient {
                 page_guard
                     .evaluate(js)
                     .await
-                    .map_err(|e| BrowserError::Execution(e.to_string()))?;
+                    .map_err(cdp_err)?;
 
                 let input_cmd = InputInsertText {
                     text: text.to_string(),
                 };
                 page_guard.execute(input_cmd).await.map_err(|e| {
-                    BrowserError::Execution(format!("Input.insertText on @e{}: {}", idx, e))
+                    cdp_err_ctx(&format!("Input.insertText on @e{}", idx), e)
                 })?;
                 return Ok(format!("Typed '{}' into @e{}", text, idx));
             }
@@ -1233,14 +1250,14 @@ impl BrowserClient {
         // then Input.insertText for real input
         let js = Self::actionability_script(selector, "el.focus(); el.value=''; return true;");
         page_guard.evaluate(js).await.map_err(|e| {
-            BrowserError::Execution(format!("Type focus on '{}' failed: {}", selector, e))
+            cdp_err_ctx(&format!("Type focus on '{}' failed", selector), e)
         })?;
 
         let input_cmd = InputInsertText {
             text: text.to_string(),
         };
         page_guard.execute(input_cmd).await.map_err(|e| {
-            BrowserError::Execution(format!("Input.insertText on '{}': {}", selector, e))
+            cdp_err_ctx(&format!("Input.insertText on '{}'", selector), e)
         })?;
 
         Ok(format!("Typed '{}' into {}", text, selector))
@@ -1338,7 +1355,7 @@ impl BrowserClient {
         };
 
         let resp = page.execute(cmd).await.map_err(|e| {
-            BrowserError::Execution(format!("Runtime.callFunctionOn failed: {}", e))
+            cdp_err_ctx("Runtime.callFunctionOn failed", e)
         })?;
 
         // Check for JS exception in response
@@ -1381,7 +1398,7 @@ impl BrowserClient {
         let focus_resp = page
             .execute(focus_cmd)
             .await
-            .map_err(|e| BrowserError::Execution(format!("Type focus failed: {}", e)))?;
+            .map_err(|e| cdp_err_ctx("Type focus failed", e))?;
 
         if let Some(details) = focus_resp.result.get("exceptionDetails") {
             let desc = details
@@ -1536,9 +1553,10 @@ impl BrowserClient {
             }
             Ok(Err(e)) => {
                 let err_str = e.to_string();
-                // If the page navigated away (context destroyed), return graceful
-                // degradation instead of an error — the script was likely successful
-                // but couldn't report back due to navigation.
+                // If the page navigated away (context destroyed), the completion
+                // state is UNKNOWN — the script may or may not have finished, and
+                // its _results died with the old context. Report that honestly
+                // instead of claiming success.
                 if err_str.contains("context was destroyed")
                     || err_str.contains("detached from frame")
                     || err_str.contains("Cannot find context")
@@ -1548,16 +1566,40 @@ impl BrowserClient {
                         "[batch_exec] Execution context lost (page navigated): {}",
                         err_str
                     );
-                    Ok(r#"[{"op":"batch_truncated","success":true,"detail":"Page navigated during execution"}]"#.to_string())
+                    Ok(r#"[{"op":"batch_truncated","success":"unknown","detail":"Page navigated during execution; completion state unknown (results lost with the old page context)"}]"#.to_string())
                 } else {
                     Err(BrowserError::Execution(err_str))
                 }
             }
             Err(_elapsed) => {
                 // Timeout: evaluate() hung, almost certainly because the page
-                // navigated mid-execution and the JS promise never resolved.
+                // navigated mid-execution and the JS promise never resolved. If the
+                // page is still alive, salvage the steps that completed before the
+                // hang (window.__nuphus._results) and report success:"unknown".
                 tracing::warn!("[batch_exec] Timed out after 10s — page likely navigated");
-                Ok(r#"[{"op":"batch_truncated","success":true,"detail":"Execution timed out (page likely navigated)"}]"#.to_string())
+                let salvaged = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    page_guard.evaluate(
+                        "JSON.stringify((window.__nuphus && window.__nuphus._results) || [])",
+                    ),
+                )
+                .await;
+                let done: String = match salvaged {
+                    Ok(Ok(r)) => r.into_value().unwrap_or_else(|_| "[]".to_string()),
+                    _ => "[]".to_string(),
+                };
+                let items = done
+                    .trim()
+                    .strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .unwrap_or("")
+                    .trim();
+                let truncated = r#"{"op":"batch_truncated","success":"unknown","detail":"Execution timed out (page likely navigated); completion state unknown — any completed steps are appended after this entry"}"#;
+                if items.is_empty() {
+                    Ok(format!("[{truncated}]"))
+                } else {
+                    Ok(format!("[{truncated},{items}]"))
+                }
             }
         }
     }
@@ -1585,7 +1627,14 @@ impl BrowserClient {
             }
             Err(e) => {
                 tracing::warn!("[Browser] Failed to set download dir via CDP: {}. Downloads will use Chrome default.", e);
-                // Don't fail — downloads still work, just in default dir
+                // Don't fail — downloads still work, just in the default dir. Record
+                // the warning so list_downloads can bubble it into the tool output
+                // instead of silently listing an empty profile dir.
+                self.download_config_warning = Some(format!(
+                    "download directory could not be configured via CDP ({e}); \
+                     downloads land in Chrome's default download folder, not {}",
+                    self.download_dir.display()
+                ));
                 self.download_configured = true;
                 Ok(())
             }
@@ -1611,6 +1660,16 @@ impl BrowserClient {
                     }
                 }
             }
+        }
+        if let Some(warning) = &self.download_config_warning {
+            // Bubble the configuration failure into the tool output: the listing
+            // below covers the profile downloads dir while real downloads may be
+            // landing in Chrome's default folder.
+            return Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "warning": warning,
+                "files": files,
+            }))
+            .unwrap_or_else(|_| "[]".to_string()));
         }
         Ok(serde_json::to_string_pretty(&files).unwrap_or_else(|_| "[]".to_string()))
     }
@@ -1704,22 +1763,26 @@ impl BrowserClient {
             .first_or_octet_stream()
             .to_string();
 
-        // Escape for JS embedding
-        let escaped_name = file_name.replace('\\', "\\\\").replace('\'', "\\'");
-        let escaped_mime = mime.replace('\\', "\\\\").replace('\'', "\\'");
+        // JS string literals via serde_json — safe against quotes/backslashes in
+        // the selector or file name (ad-hoc ' escaping was both incomplete and
+        // inconsistent with the rest of the codebase).
+        let selector_lit = js_string_literal(selector);
+        let name_lit = js_string_literal(&file_name);
+        let mime_lit = js_string_literal(&mime);
 
         let js = format!(
             r#"(function() {{
     // Find the file input element
     let el;
-    if ('{selector}'.startsWith('@')) {{
-        const idx = parseInt('{selector}'.slice(1)) - 1;
+    const sel = {selector_lit};
+    if (sel.startsWith('@')) {{
+        const idx = parseInt(sel.slice(1)) - 1;
         const els = document.querySelectorAll('input[type="file"]');
-        if (!els[idx]) throw new Error('File input {selector} not found');
+        if (!els[idx]) throw new Error('File input ' + sel + ' not found');
         el = els[idx];
     }} else {{
-        el = document.querySelector('{selector}');
-        if (!el) throw new Error('File input {selector} not found');
+        el = document.querySelector(sel);
+        if (!el) throw new Error('File input ' + sel + ' not found');
     }}
 
     // Decode base64 to Uint8Array
@@ -1729,7 +1792,7 @@ impl BrowserClient {
     for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
 
     // Create File object
-    const file = new File([byteArr], '{escaped_name}', {{ type: '{escaped_mime}' }});
+    const file = new File([byteArr], {name_lit}, {{ type: {mime_lit} }});
 
     // Set via DataTransfer
     const dt = new DataTransfer();
@@ -1737,18 +1800,18 @@ impl BrowserClient {
     el.files = dt.files;
     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
 
-    return 'Uploaded ' + '{escaped_name}' + ' (' + byteArr.length + ' bytes) to {selector}';
+    return 'Uploaded ' + {name_lit} + ' (' + byteArr.length + ' bytes) to ' + sel;
 }})()"#,
-            selector = selector,
+            selector_lit = selector_lit,
             b64 = b64,
-            escaped_name = escaped_name,
-            escaped_mime = escaped_mime,
+            name_lit = name_lit,
+            mime_lit = mime_lit,
         );
 
         let result = page_guard
             .evaluate(js)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let value: String = result
             .into_value()
@@ -1767,13 +1830,17 @@ impl BrowserClient {
             "down" => format!("window.scrollBy(0, {})", amount),
             "left" => format!("window.scrollBy(-{}, 0)", amount),
             "right" => format!("window.scrollBy({}, 0)", amount),
-            _ => format!("window.scrollBy(0, {})", amount),
+            _ => {
+                return Err(BrowserError::Config(format!(
+                    "unknown scroll direction: {direction} (expected up/down/left/right)"
+                )));
+            }
         };
 
         page_guard
             .evaluate(js)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         Ok(format!("Scrolled {} by {}", direction, amount))
     }
@@ -1807,7 +1874,7 @@ impl BrowserClient {
         let result = page_guard
             .evaluate(js)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let value: String = result
             .into_value()
@@ -1828,7 +1895,7 @@ impl BrowserClient {
                 cdp_params: Default::default(),
             })
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         if let Some(path) = path {
             std::fs::write(path, &data).map_err(BrowserError::Io)?;
@@ -1853,6 +1920,11 @@ impl BrowserClient {
         // Only wrap in async IIFE when script contains `await`.
         // Otherwise sync expressions (e.g. "document.title") return undefined
         // because there's no `return` inside the async wrapper.
+        // Known limitation: this is a substring heuristic, not a parse — `await`
+        // inside a comment or string literal (e.g. `const s = "await me"`) also
+        // triggers the wrapper (the script then needs its own `return`, which is
+        // the documented contract for async scripts), and genuinely async code
+        // using .then() without the `await` keyword is not wrapped.
         let wrapped = if script.contains("await") {
             format!("(async () => {{\n{}\n}})()", script)
         } else {
@@ -1862,7 +1934,7 @@ impl BrowserClient {
         let result = page_guard
             .evaluate(wrapped)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let value = result.into_value().unwrap_or(serde_json::Value::Null);
 
@@ -1883,7 +1955,7 @@ impl BrowserClient {
         page_guard
             .evaluate("history.back()")
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         Self::wait_for_url_change(&*page_guard, &before).await?;
 
@@ -1910,7 +1982,7 @@ impl BrowserClient {
         page_guard
             .evaluate("history.forward()")
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         Self::wait_for_url_change(&*page_guard, &before).await?;
 
@@ -2075,7 +2147,7 @@ impl BrowserClient {
         let cookies = page_guard
             .get_cookies()
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let values: Vec<serde_json::Value> = cookies
             .into_iter()
@@ -2113,24 +2185,22 @@ impl BrowserClient {
             .unwrap_or_default()
             .unwrap_or_else(|| "about:blank".to_string());
 
-        // Set cookie using JS
-        let cookie_str = if let Some(domain) = domain {
-            if let Some(path) = path {
-                format!(
-                    "document.cookie = '{}={}; domain={}; path={}'",
-                    name, value, domain, path
-                )
-            } else {
-                format!("document.cookie = '{}={}; domain={}'", name, value, domain)
-            }
-        } else {
-            format!("document.cookie = '{}={}'", name, value)
-        };
+        // Set cookie using JS — the full cookie string goes through serde_json so
+        // quotes/semicolons/backslashes in name/value/domain/path can neither break
+        // out of the JS string nor inject extra cookie attributes.
+        let mut cookie = format!("{name}={value}");
+        if let Some(domain) = domain {
+            cookie.push_str(&format!("; domain={domain}"));
+        }
+        if let Some(path) = path {
+            cookie.push_str(&format!("; path={path}"));
+        }
+        let cookie_str = format!("document.cookie = {}", js_string_literal(&cookie));
 
         page_guard
             .evaluate(cookie_str)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         Ok(format!("Set cookie: {}={} for {}", name, value, url))
     }
@@ -2149,6 +2219,12 @@ impl BrowserClient {
         }
         self.page = None;
         self.launched_headless = None;
+        // Session state must not leak into the next launch: @N refs die with the
+        // page, and download behavior has to be re-configured on the new browser.
+        self.snapshot_backend_ids.clear();
+        self.helpers_injected = false;
+        self.download_configured = false;
+        self.download_config_warning = None;
 
         // Kill the child process (managed manually, not via Browser::launch)
         if let Some(mut child) = self.child_process.take() {
@@ -2157,6 +2233,20 @@ impl BrowserClient {
         }
 
         Ok(())
+    }
+
+    /// Whether the Chromium child process launched by this client is still running:
+    /// `Some(true)` alive / `Some(false)` exited / `None` no child (attached instance
+    /// or handle already consumed). Used to gate reconnect-kill: a live process with
+    /// an unresponsive CDP connection is a *busy* browser, not a dead one.
+    pub fn child_process_alive(&mut self) -> Option<bool> {
+        self.child_process.as_mut().map(|child| {
+            match child.try_wait() {
+                Ok(Some(_status)) => false, // exited
+                Ok(None) => true,           // still running
+                Err(_) => false,            // status unknown → treat as gone
+            }
+        })
     }
 
     /// Reconnect after a confirmed dead CDP connection: reset local state, relaunch a fresh
@@ -2171,6 +2261,8 @@ impl BrowserClient {
         self.launched_headless = None;
         self.snapshot_backend_ids.clear();
         self.helpers_injected = false;
+        self.download_configured = false;
+        self.download_config_warning = None;
         if let Some(mut child) = self.child_process.take() {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -2183,20 +2275,24 @@ impl BrowserClient {
     }
 
     /// Classify failures caused by a dead CDP connection — the only errors worth a
-    /// reconnect-and-retry. These occur only when the background handler task has actually
-    /// exited (receiver gone / channel closed / websocket dropped), never from a slow page or
-    /// a busy browser, so they are reliable death signals. Business errors (element not found,
-    /// navigation timeout, selector issues) never match.
+    /// reconnect-and-retry. Structured: transport failures are wrapped as
+    /// [`BrowserError::Connection`] at the source (see [`cdp_err`]), so a page throwing
+    /// `Error("WebSocket disconnected")` can NEVER spoof this classification — page JS
+    /// exceptions always land in `BrowserError::Execution`.
     pub fn is_connection_error(err: &BrowserError) -> bool {
-        let msg = err.to_string().to_ascii_lowercase();
-        msg.contains("receiver is gone")
-            || msg.contains("channel closed")
-            || msg.contains("send failed")
-            || msg.contains("connection closed")
-            || msg.contains("connection reset")
-            || msg.contains("cdp connect failed")
-            || msg.contains("websocket")
-            || msg.contains("disconnected")
+        match err {
+            BrowserError::Connection(_) => true,
+            // Fallback for errors stringified by outer layers before the structured
+            // variant existed. Narrowed to handler-specific phrasing that chromiumoxide
+            // produces only when the background handler task is gone; page-controlled
+            // text ("websocket"/"disconnected"/"connection reset" in a JS exception
+            // message) must never match.
+            BrowserError::Execution(msg) => {
+                let msg = msg.to_ascii_lowercase();
+                msg.contains("receiver is gone") || msg.contains("channel closed")
+            }
+            _ => false,
+        }
     }
 
     /// New tab
@@ -2211,6 +2307,8 @@ impl BrowserClient {
 
         let page_arc = Arc::new(Mutex::new(page));
         self.page = Some(page_arc);
+        // New page, new backendNodeId space — stale @N refs must not carry over.
+        self.snapshot_backend_ids.clear();
 
         // Enable DOM domain for the new tab and register the anti-detection script.
         {
@@ -2231,7 +2329,7 @@ impl BrowserClient {
         let pages = browser_guard
             .pages()
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         let mut tabs = Vec::new();
         for (i, page) in pages.iter().enumerate() {
@@ -2264,7 +2362,7 @@ impl BrowserClient {
         let pages = browser_guard
             .pages()
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         if index >= pages.len() {
             return Err(BrowserError::Execution(format!(
@@ -2280,6 +2378,8 @@ impl BrowserClient {
 
         let page_arc = Arc::new(Mutex::new(page.clone()));
         self.page = Some(page_arc);
+        // Different tab, different backendNodeId space — stale @N refs must not carry over.
+        self.snapshot_backend_ids.clear();
 
         let url = page
             .url()
@@ -2327,12 +2427,12 @@ impl BrowserClient {
         // Apply to every future document, before its scripts run.
         page.execute(AddScriptToEvaluateOnNewDocumentParams::new(STEALTH_SOURCE))
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         // Also neutralize the document that is already loaded right now.
         page.evaluate(STEALTH_SOURCE)
             .await
-            .map_err(|e| BrowserError::Execution(e.to_string()))?;
+            .map_err(cdp_err)?;
 
         Ok(())
     }
@@ -2399,11 +2499,55 @@ pub enum BrowserError {
     #[error("Execution error: {0}")]
     Execution(String),
 
+    /// CDP transport-level failure (background handler task gone / websocket dropped /
+    /// channel closed / no response) — the only error class worth a reconnect-and-retry.
+    /// Structured variant so page-controlled text (JS exception messages) cannot spoof it.
+    #[error("Connection error: {0}")]
+    Connection(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("Chrome not found: {0}")]
     Chrome(#[from] ChromeError),
+}
+
+/// Whether a chromiumoxide error is a CDP **transport** failure (the background
+/// handler task is gone / the websocket died) as opposed to a business error
+/// (page JS exception, protocol rejection, request timeout on a slow page).
+fn is_transport_cdp_error(e: &chromiumoxide::error::CdpError) -> bool {
+    use chromiumoxide::error::CdpError;
+    matches!(
+        e,
+        CdpError::ChannelSendError(_) | CdpError::Ws(_) | CdpError::Io(_) | CdpError::NoResponse
+    )
+}
+
+/// Wrap a chromiumoxide error preserving the transport-vs-business distinction
+/// (P1: string-flattening used to let page JS exception text like "WebSocket
+/// disconnected" spoof the connection-error classifier).
+fn cdp_err(e: chromiumoxide::error::CdpError) -> BrowserError {
+    if is_transport_cdp_error(&e) {
+        BrowserError::Connection(e.to_string())
+    } else {
+        BrowserError::Execution(e.to_string())
+    }
+}
+
+/// Same classification with operation context prefixed.
+fn cdp_err_ctx(ctx: &str, e: chromiumoxide::error::CdpError) -> BrowserError {
+    if is_transport_cdp_error(&e) {
+        BrowserError::Connection(format!("{ctx}: {e}"))
+    } else {
+        BrowserError::Execution(format!("{ctx}: {e}"))
+    }
+}
+
+/// Serialize a Rust string as a JavaScript string literal (double-quoted, fully
+/// escaped) for safe interpolation into generated JS. serde_json string
+/// serialization is infallible for `&str`; the fallback is defensive only.
+fn js_string_literal(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 #[cfg(test)]
@@ -2462,7 +2606,11 @@ mod tests {
 
     #[test]
     fn connection_error_classification() {
-        // CDP handler gone / channel dropped → reconnectable
+        // Structured transport variant → reconnectable
+        assert!(BrowserClient::is_connection_error(&BrowserError::Connection(
+            "send failed because receiver is gone".to_string()
+        )));
+        // String fallback: only handler-specific phrasing classifies
         assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
             "send failed because receiver is gone".to_string()
         )));
@@ -2473,12 +2621,20 @@ mod tests {
         assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
             "channel closed while waiting for response".to_string()
         )));
-        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
-            "connection closed unexpectedly".to_string()
-        )));
-        assert!(BrowserClient::is_connection_error(&BrowserError::Execution(
-            "CDP connect failed: ws error".to_string()
-        )));
+        // Page-spoofable phrasing must NOT classify, even in the fallback — a page
+        // throwing Error("WebSocket disconnected") used to kill a healthy browser.
+        for spoof in [
+            "WebSocket disconnected",
+            "Error: websocket connection reset by peer",
+            "connection closed unexpectedly",
+            "CDP connect failed: ws error",
+            "Exception: read ECONNRESET",
+        ] {
+            assert!(
+                !BrowserClient::is_connection_error(&BrowserError::Execution(spoof.to_string())),
+                "page-spoofable text must not classify as connection error: {spoof}"
+            );
+        }
         // Business errors → NOT reconnectable (must not mask the real problem)
         assert!(!BrowserClient::is_connection_error(&BrowserError::ElementNotFound(
             "@9".to_string(),
@@ -2491,6 +2647,49 @@ mod tests {
             "navigation timed out after 22s — page did not finish loading (unreachable host, blocked subresources, or very slow)".to_string()
         )));
         assert!(!BrowserClient::is_connection_error(&BrowserError::NoPage));
+    }
+
+    #[test]
+    fn cdp_err_maps_transport_vs_business() {
+        use chromiumoxide::error::CdpError;
+        // Transport: handler gone (NoResponse) → Connection variant → reconnectable
+        let e = cdp_err(CdpError::NoResponse);
+        assert!(matches!(e, BrowserError::Connection(_)));
+        assert!(BrowserClient::is_connection_error(&e));
+        // Business: request timeout (slow page, NOT death) → Execution
+        let e = cdp_err(CdpError::Timeout);
+        assert!(matches!(e, BrowserError::Execution(_)));
+        assert!(!BrowserClient::is_connection_error(&e));
+        // Page-controlled text via CDP error messages stays business — the exact
+        // spoof that used to kill a healthy browser via substring matching.
+        let e = cdp_err(CdpError::ChromeMessage(
+            "WebSocket disconnected".to_string(),
+        ));
+        assert!(matches!(e, BrowserError::Execution(_)));
+        assert!(!BrowserClient::is_connection_error(&e));
+        // Context-prefixed wrapper preserves the class on both sides
+        let e = cdp_err_ctx("Click on '#x' failed", CdpError::NoResponse);
+        assert!(matches!(e, BrowserError::Connection(_)));
+        let e = cdp_err_ctx("Click on '#x' failed", CdpError::Timeout);
+        assert!(matches!(e, BrowserError::Execution(_)));
+    }
+
+    #[test]
+    fn js_string_literal_escapes_safely() {
+        // Quotes / backslashes / newlines are escaped; roundtrip via JSON parse.
+        for s in [
+            "input[name='q']",
+            "a'b\\c\"d",
+            "line1\nline2",
+            "'; alert(1); //",
+        ] {
+            let lit = js_string_literal(s);
+            let back: String = serde_json::from_str(&lit).expect("valid JSON string literal");
+            assert_eq!(back, s, "literal must roundtrip: {s}");
+        }
+        // A selector containing quotes must not be able to break out of the JS string.
+        let lit = js_string_literal("';alert(1);//");
+        assert!(!lit.contains("''"), "no raw quote breakout: {lit}");
     }
 
     // ── Integration tests (real Chrome, #[ignore]) ──

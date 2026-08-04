@@ -41,8 +41,27 @@ function binaryInDir(pkgDir, pkg, binFile) {
   return null;
 }
 
+// The meta package's own version (this launcher lives in <meta>/bin).
+function metaVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || null;
+  } catch {
+    return null;
+  }
+}
+
+// Version declared by a resolved platform package directory.
+function pkgVersionAt(pkgDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8')).version || null;
+  } catch {
+    return null;
+  }
+}
+
 function binaryNameFor(pkg) {
   const binFile = 'nuphus-mcp' + (process.platform === 'win32' ? '.exe' : '');
+  const expected = metaVersion();
 
   // npm can lay out the optional platform packages two ways:
   //   hoisted sibling:  <prefix>/node_modules/@nuphus/<pkg>/bin/<bin>
@@ -50,16 +69,37 @@ function binaryNameFor(pkg) {
   // (npm >= 10 tends to NEST optionalDependencies under the dependent package
   // in a global install, so `__dirname/../..` never resolves. Walk up the
   // directory tree checking node_modules at each level, like `require` does.)
+  //
+  // Version guard: a walk-up hit can land on a STALE platform package left over
+  // from an older install — running a mismatched binary silently is worse than
+  // failing loudly, so mismatches are collected and only reported when no
+  // version-matching candidate exists anywhere up the tree.
+  const mismatches = [];
   let dir = __dirname;
   for (;;) {
     for (const sub of [path.join('node_modules', '@nuphus', pkg), path.join('node_modules', pkg)]) {
-      const found = binaryInDir(path.join(dir, sub), pkg, binFile);
-      if (found) return found;
+      const pkgDir = path.join(dir, sub);
+      const found = binaryInDir(pkgDir, pkg, binFile);
+      if (found) {
+        const v = pkgVersionAt(pkgDir);
+        if (!expected || !v || v === expected) return found;
+        mismatches.push(`${pkgDir} (platform ${v} ≠ meta ${expected})`);
+      }
     }
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) break;
     dir = parent;
   }
+  if (mismatches.length) {
+    console.error(`[nuphus-mcp] found ${pkg} but its version does not match the meta package @${expected}:
+  - ${mismatches.join('\n  - ')}
+
+The install is corrupt or version-mismatched. Reinstall to fix:
+
+    npm install -g @nuphus/nuphus-mcp`);
+    process.exit(1);
+  }
+  return null;
 }
 
 function run() {

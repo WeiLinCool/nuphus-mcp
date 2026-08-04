@@ -3,7 +3,7 @@
 //! Protocol mirror reference: `src/mcp/client.rs` (Nuphus main crate's MCP stdio client).
 //! The client sends one-line JSON requests and the server responds line by line.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 
 /// JSON-RPC version number
@@ -32,15 +32,65 @@ pub mod codes {
     // JSON-RPC error a tools/call can produce here is INVALID_PARAMS for an unknown tool name.
 }
 
-/// Inbound JSON-RPC request (including notifications: no `id` means notification, no response needed)
-#[derive(Debug, Clone, Deserialize)]
+/// Inbound JSON-RPC request (including notifications).
+///
+/// `id == None` means the `id` member is ABSENT — a notification that must not
+/// be answered. An explicitly present `"id": null` is `Some(Value::Null)` and
+/// MUST be answered: a client waiting on that id would otherwise hang forever.
+#[derive(Debug, Clone)]
 pub struct Request {
-    #[serde(rename = "jsonrpc")]
-    pub jsonrpc: Option<String>,
     pub id: Option<Value>,
     pub method: String,
-    #[serde(default)]
     pub params: Option<Value>,
+}
+
+impl Request {
+    /// Parse and structurally validate one inbound JSON-RPC line.
+    ///
+    /// Error mapping per JSON-RPC 2.0:
+    /// - syntactically invalid JSON             → [`codes::PARSE_ERROR`] (-32700)
+    /// - valid JSON but structurally not a Request → [`codes::INVALID_REQUEST`] (-32600):
+    ///   not an object / `jsonrpc` missing or not `"2.0"` / `method` missing or not a string
+    pub fn parse(line: &str) -> Result<Self, RpcError> {
+        let value: Value = serde_json::from_str(line)
+            .map_err(|e| RpcError::new(codes::PARSE_ERROR, format!("Parse error: {}", e)))?;
+
+        let obj = value.as_object().ok_or_else(|| {
+            RpcError::new(
+                codes::INVALID_REQUEST,
+                "Invalid Request: expected a JSON-RPC request object",
+            )
+        })?;
+
+        match obj.get("jsonrpc").and_then(Value::as_str) {
+            Some(JSONRPC_VERSION) => {}
+            _ => {
+                return Err(RpcError::new(
+                    codes::INVALID_REQUEST,
+                    "Invalid Request: \"jsonrpc\" must be \"2.0\"",
+                ));
+            }
+        }
+
+        let method = obj
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+            .ok_or_else(|| {
+                RpcError::new(
+                    codes::INVALID_REQUEST,
+                    "Invalid Request: \"method\" must be a non-empty string",
+                )
+            })?;
+
+        Ok(Self {
+            // obj.get() distinguishes an absent id (notification) from an
+            // explicit "id": null (a request that expects a response).
+            id: obj.get("id").cloned(),
+            method: method.to_string(),
+            params: obj.get("params").cloned(),
+        })
+    }
 }
 
 /// JSON-RPC error object

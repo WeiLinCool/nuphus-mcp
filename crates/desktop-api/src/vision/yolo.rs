@@ -3,7 +3,8 @@
 //! Logic ported from the main crate's `src/desktop/yolo_detect.rs`, sharing the model path with paddle_ocr.
 //! Detects icons, buttons and other UI elements, complementing OCR text detection.
 
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use crate::vision::models::{resolve_models_dir, YOLO_MODEL};
 use crate::vision::{Element, ElementKind};
@@ -14,9 +15,16 @@ const YOLO_INPUT_SIZE: u32 = 640;
 const YOLO_CONF_THRESHOLD: f32 = 0.25;
 const NMS_IOU_THRESHOLD: f32 = 0.45;
 
+/// Process-wide shared detector (P1: per-call `YoloDetector::new` + `detect`
+/// re-committed the ~80 MB ONNX model on every single perceive).
+static SHARED_YOLO: OnceLock<YoloDetector> = OnceLock::new();
+
 /// YOLO icon detector
 pub struct YoloDetector {
     session: Mutex<Option<ort::session::Session>>,
+    /// Model path the loaded session was built from — a path change (e.g.
+    /// NUPHUS_MODELS_DIR switch) triggers a reload instead of serving stale state.
+    loaded_from: Mutex<Option<PathBuf>>,
 }
 
 impl Default for YoloDetector {
@@ -29,18 +37,28 @@ impl YoloDetector {
     pub fn new() -> Self {
         Self {
             session: Mutex::new(None),
+            loaded_from: Mutex::new(None),
         }
     }
 
-    /// Initialize the YOLO session (lazy-loaded, only called once)
-    pub fn init(&self) -> Result<(), DesktopError> {
-        {
-            let guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.is_some() {
-                return Ok(());
-            }
-        }
+    /// Process-wide shared detector instance.
+    pub fn shared() -> &'static YoloDetector {
+        SHARED_YOLO.get_or_init(YoloDetector::new)
+    }
 
+    /// Whether a usable model session is currently loaded (honest availability
+    /// signal for callers reporting `yolo_available`).
+    pub fn is_loaded(&self) -> bool {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Initialize the YOLO session (lazy-loaded; re-initializes when the resolved
+    /// model path changed).
+    pub fn init(&self) -> Result<(), DesktopError> {
+        super::paddle_ocr::ensure_ort_dylib();
         let model_path = resolve_models_dir()
             .map(|dir| dir.join(YOLO_MODEL))
             .filter(|p| p.exists())
@@ -50,6 +68,14 @@ impl YoloDetector {
                 ))
             })?;
 
+        {
+            let session_guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
+            let path_guard = self.loaded_from.lock().unwrap_or_else(|e| e.into_inner());
+            if session_guard.is_some() && path_guard.as_ref() == Some(&model_path) {
+                return Ok(());
+            }
+        }
+
         tracing::info!("[yolo] loading ONNX model: {}", model_path.display());
 
         let session = ort::session::Session::builder()
@@ -58,7 +84,7 @@ impl YoloDetector {
                     "[yolo] failed to create session builder: {e}"
                 ))
             })?
-            .commit_from_file(model_path)
+            .commit_from_file(&model_path)
             .map_err(|e| {
                 DesktopError::Other(anyhow::anyhow!("[yolo] failed to load model: {e}"))
             })?;
@@ -81,6 +107,7 @@ impl YoloDetector {
 
         let mut guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(session);
+        *self.loaded_from.lock().unwrap_or_else(|e| e.into_inner()) = Some(model_path);
         tracing::info!("[yolo] model loaded");
         Ok(())
     }

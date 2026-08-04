@@ -46,7 +46,7 @@ jobs:
         run: cargo check --workspace
 
   test:
-    name: cargo test -p nuphus-mcp (${{ matrix.os }})
+    name: cargo test (all crates) (${{ matrix.os }})
     # nuphus-mcp 的协议/安全测试包含真实剪贴板写入（desktop_clipboard_write），
     # 需要桌面会话：windows / macOS runner 具备；Linux headless runner 不跑测试。
     strategy:
@@ -62,6 +62,48 @@ jobs:
           key: ${{ runner.arch }}
       - name: Run nuphus-mcp tests
         run: cargo test -p nuphus-mcp
+      - name: Run desktop-api tests
+        run: cargo test -p desktop-api
+      - name: Run nuphus-browser unit tests
+        # Unit tests only here (the #[ignore]d real-Chrome integration tests get
+        # their own job below). No browser is launched by these.
+        run: cargo test -p nuphus-browser
+
+  browser-integration:
+    name: nuphus-browser real-Chrome integration (windows)
+    runs-on: windows-latest
+    # Real-Chrome CDP integration tests (7 cases, #[ignore]d by default).
+    # windows-latest ships Chrome preinstalled, so the tests are runner-feasible.
+    # continue-on-error for the initial rollout: they pass 7/7 locally, but
+    # runner timing/profile quirks may differ — visibility first, promotion to
+    # a hard gate after a few green weeks. NOTE: batch-B tests that prefer a
+    # local OCR model dir already auto-skip that half when models are absent.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.arch }}
+      - name: Integration tests (real Chrome, single-threaded)
+        # Single-threaded: the tests share one Chrome profile; parallel runs
+        # would collide on SingletonLock.
+        run: cargo test -p nuphus-browser -- --ignored --test-threads=1
+
+  audit:
+    name: cargo audit (advisory)
+    runs-on: ubuntu-latest
+    # Advisory-only rollout: known-vulnerability advisories become VISIBLE in CI
+    # without blocking merges. Flip continue-on-error off once the current
+    # advisory backlog is triaged.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        run: cargo audit
 
   fmt:
     name: cargo fmt --check

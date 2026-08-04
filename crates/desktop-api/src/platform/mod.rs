@@ -5,6 +5,26 @@ use crate::core::*;
 #[cfg(windows)]
 pub mod windows;
 
+/// The current foreground window handle (Windows), `None` on other platforms or
+/// when no window holds the foreground. Used by callers that mean "type into
+/// whatever currently has focus" instead of passing an invalid 0 handle.
+pub fn foreground_hwnd() -> Option<isize> {
+    #[cfg(windows)]
+    {
+        use ::windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.0 == 0 {
+            None
+        } else {
+            Some(hwnd.0 as isize)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Window manager
 pub struct WindowManager {
     cache: lru::LruCache<String, isize>, // title -> hwnd

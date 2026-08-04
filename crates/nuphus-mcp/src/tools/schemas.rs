@@ -248,7 +248,8 @@ fn browser_tools() -> Vec<ToolDef> {
             "browser_click",
             "Click element by CSS selector or ref ID from snapshot (e.g. @1, @e0, 'button'). CSS selector path auto-waits for the element to appear and become visible (up to 5s) before clicking.",
             json_props! {
-                "selector" => obj!("type"="string","description"="CSS selector or ref ID (e.g. @1, @e0, 'button')")
+                "selector" => obj!("type"="string","description"="CSS selector or ref ID (e.g. @1, @e0, 'button')"),
+                "ref" => obj!("type"="string","description"="Ref ID from snapshot (e.g. @1, @e0); alias of selector — provide either one")
             },
             &["selector"],
         ),
@@ -257,6 +258,7 @@ fn browser_tools() -> Vec<ToolDef> {
             "Type text into input field by CSS selector or ref ID from snapshot. CSS selector path auto-waits for the element to appear and become visible (up to 5s) before typing.",
             json_props! {
                 "selector" => obj!("type"="string","description"="CSS selector or ref ID of input field (e.g. @1, @e0)"),
+                "ref" => obj!("type"="string","description"="Ref ID from snapshot (e.g. @1, @e0); alias of selector — provide either one"),
                 "text" => obj!("type"="string","description"="Text to type")
             },
             &["selector", "text"],
@@ -284,7 +286,7 @@ fn browser_tools() -> Vec<ToolDef> {
             json_props! {
                 "path" => obj!("type"="string","description"="Save path")
             },
-            &[],
+            &["path"],
         ),
         tool_def(
             "browser_close",

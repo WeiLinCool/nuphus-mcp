@@ -127,12 +127,15 @@ async fn download_with_fallback(
 /// Minimum accepted file size per model (bytes).
 ///
 /// Guards against empty/truncated downloads that succeed with HTTP 200 but carry an
-/// error page or a partial body. RapidOCR PP-OCRv4 ONNX models are ~4-6 MB and the
-/// character dictionary ~60 KB, so these floors can never reject a real artifact.
+/// error page or a partial body. Real artifacts: det ~4.7 MB, rec ~10.8 MB,
+/// dictionary ~26 KB (measured from the official RapidOCR/PaddleOCR sources), so
+/// these floors can never reject a real artifact while being 10x stricter than a
+/// generic 100 KB floor. On top of the floor, ONNX files must pass an ORT trial
+/// load before they are trusted (see `download_file`).
 fn min_expected_bytes(file: &str) -> u64 {
     match file {
-        "ch_PP-OCRv4_det.onnx" | "ch_PP-OCRv4_rec.onnx" => 100_000,
-        "ch_PP-OCR_keys_v1.txt" => 1_000,
+        "ch_PP-OCRv4_det.onnx" | "ch_PP-OCRv4_rec.onnx" => 1_000_000,
+        "ch_PP-OCR_keys_v1.txt" => 10_000,
         _ => 0,
     }
 }
@@ -158,6 +161,25 @@ async fn download_file(
     url: &str,
     dest: &std::path::Path,
 ) -> Result<(), String> {
+    // Unique temp name per process: two nuphus-mcp instances downloading the same
+    // model used to interleave writes into one fixed `.part` file, producing a
+    // permanently corrupt model. PID suffix isolates the scratch file; the final
+    // atomic rename makes the last (complete) writer win.
+    let tmp = dest.with_extension(format!("part.{}", std::process::id()));
+    let result = download_file_inner(client, url, dest, &tmp).await;
+    if result.is_err() {
+        // No half-written scratch file may survive a failed download.
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result
+}
+
+async fn download_file_inner(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &std::path::Path,
+    tmp: &std::path::Path,
+) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
     let resp = client
@@ -169,8 +191,7 @@ async fn download_file(
         return Err(format!("GET {url} -> HTTP {}", resp.status()));
     }
 
-    let tmp = dest.with_extension("part");
-    let mut file = tokio::fs::File::create(&tmp)
+    let mut file = tokio::fs::File::create(tmp)
         .await
         .map_err(|e| format!("create temp file {} failed: {e}", tmp.display()))?;
 
@@ -189,25 +210,23 @@ async fn download_file(
 
     // Integrity check before the temp file can become a "valid" model.
     let file_name = dest.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let meta = tokio::fs::metadata(&tmp)
+    let meta = tokio::fs::metadata(tmp)
         .await
         .map_err(|e| format!("stat temp file {} failed: {e}", tmp.display()))?;
     let floor = min_expected_bytes(file_name);
     if meta.len() < floor {
-        let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!(
             "download too small ({} bytes < {floor} floor), refusing to use as model: {file_name}",
             meta.len()
         ));
     }
     if let Some(expected) = expected_sha256(file_name) {
-        let bytes = tokio::fs::read(&tmp)
+        let bytes = tokio::fs::read(tmp)
             .await
             .map_err(|e| format!("read temp file for hashing failed: {e}"))?;
         use sha2::{Digest, Sha256};
         let actual = hex::encode(Sha256::digest(&bytes));
         if !actual.eq_ignore_ascii_case(&expected) {
-            let _ = tokio::fs::remove_file(&tmp).await;
             return Err(format!(
                 "model SHA-256 mismatch for {file_name}: got {actual}, expected {expected}. \
                  Fix NUPHUS_MCP_MODEL_SHA256_{file_name} or unset it to skip hashing"
@@ -215,7 +234,19 @@ async fn download_file(
         }
     }
 
-    std::fs::rename(&tmp, dest).map_err(|e| format!("rename to {} failed: {e}", dest.display()))?;
+    // Strongest integrity gate: an ONNX model must actually load into the ONNX
+    // Runtime. A truncated-but-above-floor or content-corrupted file is rejected
+    // here instead of permanently wedging OCR with a "present but broken" model.
+    if file_name.ends_with(".onnx") {
+        let tmp_owned = tmp.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            desktop_api::vision::paddle_ocr::onnx_session_loadable(&tmp_owned)
+        })
+        .await
+        .map_err(|e| format!("onnx validation worker failed: {e}"))??;
+    }
+
+    std::fs::rename(tmp, dest).map_err(|e| format!("rename to {} failed: {e}", dest.display()))?;
     tracing::info!("[models] download complete: {} <- {}", dest.display(), url);
     Ok(())
 }

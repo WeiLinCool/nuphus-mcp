@@ -19,7 +19,8 @@
     "bin"
   ],
   "scripts": {
-    "postinstall": "node bin/check.js"
+    "postinstall": "node bin/check.js",
+    "prepublishOnly": "node ./scripts/check-clean-bin.js"
   },
   "optionalDependencies": {
     "@nuphus/nuphus-mcp-win32-x64": "0.1.6",

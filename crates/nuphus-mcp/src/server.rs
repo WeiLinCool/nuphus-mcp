@@ -2,6 +2,7 @@
 //!
 //! Supported MCP methods:
 //! - `initialize` / `notifications/initialized`
+//! - `shutdown` / `exit` (MCP lifecycle)
 //! - `tools/list`
 //! - `tools/call`
 //! - `ping`
@@ -18,6 +19,10 @@ pub struct McpServer {
     initialized: bool,
     /// Security policy (strict confirmation mode, etc.)
     policy: crate::security::SecurityPolicy,
+    /// MCP lifecycle: a `shutdown` request has been answered (phase 1 of graceful teardown)
+    shutdown_received: bool,
+    /// MCP lifecycle: an `exit` notification arrived — the stdio loop should terminate
+    exit_received: bool,
 }
 
 /// Result of a single dispatch: either result or error (never both).
@@ -33,6 +38,8 @@ impl McpServer {
         Self {
             initialized: false,
             policy: crate::security::SecurityPolicy::from_env(),
+            shutdown_received: false,
+            exit_received: false,
         }
     }
 
@@ -41,28 +48,39 @@ impl McpServer {
         Self {
             initialized: false,
             policy,
+            shutdown_received: false,
+            exit_received: false,
+        }
+    }
+
+    /// Whether an `exit` notification has arrived — the stdio loop should terminate.
+    pub fn exit_received(&self) -> bool {
+        self.exit_received
+    }
+
+    /// Process exit code per the MCP lifecycle: 0 when `exit` follows a `shutdown`
+    /// request, 1 when the client exits without a graceful shutdown.
+    pub fn exit_code(&self) -> u8 {
+        if self.shutdown_received {
+            0
+        } else {
+            1
         }
     }
 
     /// Handle one line of inbound JSON (request or notification), returning the response line to write to stdout.
-    /// Notifications (no id) produce no response.
+    /// Notifications (no id member) produce no response; an explicit `"id": null` does.
     pub async fn handle_line(&mut self, line: &str) -> Option<String> {
-        let parsed: Result<Request, serde_json::Error> = serde_json::from_str(line);
-        let request = match parsed {
+        let request = match Request::parse(line) {
             Ok(r) => r,
             Err(e) => {
-                // Parse error: request is not valid JSON, id is unknowable → null
-                return Some(
-                    Response::err(
-                        Value::Null,
-                        RpcError::new(codes::PARSE_ERROR, format!("Parse error: {}", e)),
-                    )
-                    .to_line(),
-                );
+                // Parse/structure failure: the request id cannot be trusted → null
+                return Some(Response::err(Value::Null, e).to_line());
             }
         };
 
-        // Notification: no id → process but do not respond
+        // Notification: id member absent → process but do not respond.
+        // An explicit "id": null IS a request (Some(Value::Null)) and gets a response.
         let is_notification = request.id.is_none();
         let id = request.id.unwrap_or(Value::Null);
 
@@ -95,6 +113,18 @@ impl McpServer {
             "initialize" => self.initialize(params),
             "notifications/initialized" => Dispatched::Ok(json!({})),
             "ping" => Dispatched::Ok(json!({})),
+            // MCP lifecycle: client signals graceful teardown — answer null and
+            // wait for the `exit` notification (handled by the main loop).
+            "shutdown" => {
+                self.shutdown_received = true;
+                Dispatched::Ok(Value::Null)
+            }
+            // MCP lifecycle notification: terminate the process. The main loop
+            // reads `exit_received()` after each line and exits with `exit_code()`.
+            "exit" => {
+                self.exit_received = true;
+                Dispatched::Ok(Value::Null)
+            }
             "tools/list" => {
                 if !self.initialized {
                     return Dispatched::Err(RpcError::new(
@@ -122,14 +152,13 @@ impl McpServer {
 
     // ─────────────────────────── methods ───────────────────────────
 
-    fn initialize(&mut self, params: Value) -> Dispatched {
-        let protocol_version = params
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .unwrap_or(crate::protocol::PROTOCOL_VERSION);
+    fn initialize(&mut self, _params: Value) -> Dispatched {
+        // Always answer with the version this server actually implements.
+        // Echoing the client's protocolVersion would falsely claim support for
+        // versions we never implemented.
         self.initialized = true;
         Dispatched::Ok(json!({
-            "protocolVersion": protocol_version,
+            "protocolVersion": crate::protocol::PROTOCOL_VERSION,
             "capabilities": {
                 "tools": { "listChanged": false }
             },
@@ -173,8 +202,18 @@ impl McpServer {
                 ));
             }
         };
-        let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-        let args = if args.is_object() { args } else { json!({}) };
+        let args = match params.get("arguments") {
+            // Absent (or explicit null) arguments default to an empty object —
+            // MCP clients commonly omit `arguments` for parameterless tools.
+            None | Some(Value::Null) => json!({}),
+            Some(v) if v.is_object() => v.clone(),
+            Some(_) => {
+                return Dispatched::Err(RpcError::new(
+                    codes::INVALID_PARAMS,
+                    "tools/call: 'arguments' must be an object",
+                ));
+            }
+        };
 
         // Security boundary: in strict confirmation mode, write operations must carry confirm:true
         if let Err(msg) = self.policy.check_write_confirmation(name, &args) {
@@ -185,7 +224,7 @@ impl McpServer {
             return Dispatched::Ok(result);
         }
 
-        match tools::execute(name, &args).await {
+        match execute_tool_isolated(name.to_owned(), args).await {
             Ok(output) => {
                 let mut result = json!({
                     "content": [ { "type": "text", "text": output.text } ],
@@ -198,6 +237,35 @@ impl McpServer {
             Err(e) => Dispatched::Err(RpcError::new(codes::INVALID_PARAMS, e)),
         }
     }
+}
+
+/// Execute a tool in an isolated task so a panicking tool cannot take down the
+/// whole server process (P1 guard). A tool panic crosses the JoinHandle as a
+/// `JoinError` and is converted into a semantic tool failure (`isError: true`
+/// with a sanitized "internal error" message) instead of unwinding through
+/// `#[tokio::main]` and killing every connected Agent's server.
+///
+/// Lock safety: the process-wide tokio Mutex guard and the cross-process file
+/// lock guard both live *inside* the spawned future. Unwinding drops that
+/// future, so both guards are released by RAII — a panicking tool never wedges
+/// the automation locks (covered by `panicking_tool_returns_is_error_and_server_survives`).
+async fn execute_tool_isolated(
+    name: String,
+    args: Value,
+) -> Result<tools::ToolOutput, String> {
+    let log_name = name.clone();
+    tokio::spawn(async move { tools::execute(&name, &args).await })
+        .await
+        .unwrap_or_else(|join_err| {
+            if join_err.is_panic() {
+                tracing::error!("[mcp] tool '{}' panicked: {}", log_name, join_err);
+            } else {
+                tracing::error!("[mcp] tool '{}' task cancelled: {}", log_name, join_err);
+            }
+            Ok(tools::ToolOutput::failure(
+                "internal error: tool execution failed unexpectedly; the server is still alive",
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -754,5 +822,177 @@ mod tests {
             None => std::env::remove_var("NUPHUS_MCP_NO_MODEL_DOWNLOAD"),
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── P1 panic guard ──
+
+    #[tokio::test]
+    async fn panicking_tool_returns_is_error_and_server_survives() {
+        let mut server = McpServer::new();
+        server
+            .handle_line(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#)
+            .await;
+
+        // test_panic_tool panics inside tools::execute while holding both the
+        // process-level mutex and the cross-process file lock.
+        let resp = server
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":60,"method":"tools/call","params":{"name":"test_panic_tool","arguments":{}}}"#,
+            )
+            .await
+            .expect("panicking tool must still produce a response");
+        let v = parse(&resp);
+        assert!(
+            v.get("error").is_none(),
+            "tool panic is a semantic failure, not a JSON-RPC error: {resp}"
+        );
+        assert_eq!(v["result"]["isError"], json!(true));
+        let text = v["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("internal error"),
+            "panic detail must be sanitized: {text}"
+        );
+        assert!(
+            !text.contains("intentional test panic"),
+            "raw panic message must not leak into tool output: {text}"
+        );
+
+        // The server keeps serving, and both automation locks were released by
+        // RAII during unwinding — otherwise this call would hang on the process
+        // mutex or fail with a bogus "busy" from the leaked file lock.
+        let resp = server
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":61,"method":"tools/call","params":{"name":"desktop_screen_size","arguments":{}}}"#,
+            )
+            .await
+            .expect("server must keep responding after a tool panic");
+        let v = parse(&resp);
+        assert!(v.get("error").is_none(), "follow-up call works: {resp}");
+        assert_ne!(
+            v["result"]["isError"],
+            json!(true),
+            "locks released after panic: {resp}"
+        );
+    }
+
+    // ── P2 JSON-RPC validation ──
+
+    #[tokio::test]
+    async fn wrong_jsonrpc_version_returns_invalid_request() {
+        let mut server = McpServer::new();
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#)
+            .await
+            .expect("response expected");
+        let (code, _) = error_of(&resp);
+        assert_eq!(code, codes::INVALID_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn structural_errors_return_invalid_request_not_parse_error() {
+        let mut server = McpServer::new();
+        // Valid JSON, not a request object.
+        let resp = server
+            .handle_line(r#"[1,2,3]"#)
+            .await
+            .expect("response expected");
+        assert_eq!(error_of(&resp).0, codes::INVALID_REQUEST);
+        // Request object missing "method".
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":2}"#)
+            .await
+            .expect("response expected");
+        assert_eq!(error_of(&resp).0, codes::INVALID_REQUEST);
+        // Missing "jsonrpc" member.
+        let resp = server
+            .handle_line(r#"{"id":3,"method":"ping"}"#)
+            .await
+            .expect("response expected");
+        assert_eq!(error_of(&resp).0, codes::INVALID_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn explicit_null_id_is_a_request_and_gets_a_response() {
+        let mut server = McpServer::new();
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#)
+            .await
+            .expect("explicit null id must NOT be swallowed as a notification");
+        let v = parse(&resp);
+        assert_eq!(v["id"], Value::Null);
+        assert!(v.get("result").is_some(), "null-id request answered: {resp}");
+    }
+
+    #[tokio::test]
+    async fn non_object_arguments_returns_invalid_params() {
+        let mut server = McpServer::new();
+        server
+            .handle_line(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}"#)
+            .await;
+        let resp = server
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"desktop_screen_size","arguments":"not-an-object"}}"#,
+            )
+            .await
+            .expect("response expected");
+        let (code, msg) = error_of(&resp);
+        assert_eq!(code, codes::INVALID_PARAMS);
+        assert!(msg.contains("arguments"), "message names the field: {msg}");
+    }
+
+    // ── P2 initialize version ──
+
+    #[tokio::test]
+    async fn initialize_answers_with_server_version_not_client_echo() {
+        let mut server = McpServer::new();
+        let resp = server
+            .handle_line(
+                r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"test"}}}"#,
+            )
+            .await
+            .expect("initialize must produce a response");
+        let v = parse(&resp);
+        assert_eq!(
+            v["result"]["protocolVersion"],
+            crate::protocol::PROTOCOL_VERSION,
+            "server must answer with the version it implements, not echo the client"
+        );
+    }
+
+    // ── P3 shutdown / exit lifecycle ──
+
+    #[tokio::test]
+    async fn shutdown_returns_null_result_and_exit_sets_flag() {
+        let mut server = McpServer::new();
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"shutdown"}"#)
+            .await
+            .expect("shutdown must produce a response");
+        let v = parse(&resp);
+        assert!(v.get("error").is_none(), "shutdown succeeds: {resp}");
+        assert_eq!(v["result"], Value::Null);
+        assert!(!server.exit_received());
+
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"2.0","method":"exit"}"#)
+            .await;
+        assert!(resp.is_none(), "exit is a notification: no response");
+        assert!(server.exit_received());
+        assert_eq!(server.exit_code(), 0, "exit after shutdown is a clean exit");
+    }
+
+    #[tokio::test]
+    async fn exit_without_shutdown_yields_exit_code_1() {
+        let mut server = McpServer::new();
+        let resp = server
+            .handle_line(r#"{"jsonrpc":"2.0","method":"exit"}"#)
+            .await;
+        assert!(resp.is_none());
+        assert!(server.exit_received());
+        assert_eq!(
+            server.exit_code(),
+            1,
+            "exit without a prior shutdown exits with code 1 (per spec)"
+        );
     }
 }

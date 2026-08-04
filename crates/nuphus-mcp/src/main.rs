@@ -73,6 +73,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             writer.write_all(b"\n").await?;
             writer.flush().await?;
         }
+        // MCP lifecycle: an `exit` notification terminates the server. Flush any
+        // pending output, then exit 0 when it followed a `shutdown` request,
+        // 1 when the client skipped the graceful shutdown (per spec).
+        if server.exit_received() {
+            writer.flush().await?;
+            let code = server.exit_code();
+            tracing::info!("[nuphus-mcp] exit notification received, exiting (code={code})");
+            std::process::exit(code as i32);
+        }
     }
 
     tracing::info!("[nuphus-mcp] stdin EOF, shutting down");

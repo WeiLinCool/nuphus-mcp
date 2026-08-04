@@ -82,10 +82,19 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
         for cp in &codepoints {
             let inputs = make_unicode_inputs(*cp);
             let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+            // Partial injection (0 < sent < len) leaves a key physically stuck
+            // down — treat it as a hard failure, same as a total failure.
             if sent == 0 {
                 return Err(DesktopError::InputFailed(format!(
                     "SendInput failed for codepoint U+{:04X}",
                     cp
+                )));
+            }
+            if (sent as usize) < inputs.len() {
+                return Err(DesktopError::InputFailed(format!(
+                    "SendInput partially injected codepoint U+{:04X} ({sent}/{} events)",
+                    cp,
+                    inputs.len()
                 )));
             }
             total_sent += sent as usize;
@@ -100,10 +109,11 @@ pub fn nuphus_input(text: &str, session: &InputSession) -> Result<usize> {
         if session.press_enter {
             let enter_inputs = make_enter_inputs();
             let sent = unsafe { SendInput(&enter_inputs, std::mem::size_of::<INPUT>() as i32) };
-            if sent == 0 {
-                return Err(DesktopError::InputFailed(
-                    "SendInput Enter failed".to_string(),
-                ));
+            if (sent as usize) < enter_inputs.len() {
+                return Err(DesktopError::InputFailed(format!(
+                    "SendInput Enter failed ({sent}/{} events)",
+                    enter_inputs.len()
+                )));
             }
             total_sent += sent as usize;
         }

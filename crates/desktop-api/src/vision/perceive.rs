@@ -150,24 +150,38 @@ pub fn perceive_image(path: &str) -> Result<PerceiveOutput, String> {
         .to_rgb8();
     let (w, h) = (img.width(), img.height());
 
-    let mut ocr = PaddleOcr::new()?;
-    let ocr_blocks = ocr.ocr_image_with_boxes(&img)?;
+    // Process-wide shared engines (P1): no 6623-line dictionary re-read and no
+    // ~80MB model re-commit per call; inference is mutex-serialized inside.
+    let ocr_blocks = PaddleOcr::with_shared(|ocr| ocr.ocr_image_with_boxes(&img))?;
 
-    let yolo_available = yolo_model_available(&models_dir);
-    let yolo_elements: Vec<Element> = if yolo_available {
-        let rgba = image::DynamicImage::ImageRgb8(img).to_rgba8();
-        let frame = Frame {
-            id: uuid::Uuid::new_v4(),
-            pixels: rgba.into_raw(),
-            width: w,
-            height: h,
-            scope: Scope::Fullscreen,
-            timestamp: chrono::Utc::now(),
-            source: FrameSource::Screenshot,
-        };
-        YoloDetector::new()
-            .detect(&frame)
-            .map_err(|e| format!("YOLO detection failed: {e}"))?
+    // Honest availability: the file existing is only a hint — availability is
+    // decided by whether the session actually initializes (a corrupt
+    // icon_detect.onnx must report yolo_available=false, not pretend).
+    let mut yolo_available = false;
+    let yolo_elements: Vec<Element> = if yolo_model_available(&models_dir) {
+        let detector = YoloDetector::shared();
+        match detector.init() {
+            Ok(()) => {
+                yolo_available = detector.is_loaded();
+                let rgba = image::DynamicImage::ImageRgb8(img).to_rgba8();
+                let frame = Frame {
+                    id: uuid::Uuid::new_v4(),
+                    pixels: rgba.into_raw(),
+                    width: w,
+                    height: h,
+                    scope: Scope::Fullscreen,
+                    timestamp: chrono::Utc::now(),
+                    source: FrameSource::Screenshot,
+                };
+                detector
+                    .detect(&frame)
+                    .map_err(|e| format!("YOLO detection failed: {e}"))?
+            }
+            Err(e) => {
+                tracing::warn!("[perceive] YOLO model present but failed to load, OCR-only: {e}");
+                vec![]
+            }
+        }
     } else {
         vec![]
     };

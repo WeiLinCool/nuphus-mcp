@@ -47,9 +47,8 @@ pub async fn position() -> Result<Point> {
         use ::windows::Win32::Foundation::POINT;
         use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut pt = POINT::default();
-        unsafe {
-            let _ = GetCursorPos(&mut pt);
-        }
+        unsafe { GetCursorPos(&mut pt) }
+            .map_err(|e| DesktopError::InputFailed(format!("GetCursorPos failed: {e}")))?;
         Ok(Point { x: pt.x, y: pt.y })
     }
     #[cfg(not(windows))]
@@ -127,10 +126,20 @@ pub async fn right_click(x: i32, y: i32) -> Result<()> {
 ///
 /// `direction`: "up" / "down"; `amount`: number of wheel notches (each notch = 120 delta).
 pub async fn scroll(direction: &str, amount: i32) -> Result<()> {
+    // Validate before touching any platform API: an unknown direction must be an
+    // error, not a silent "down".
+    let delta: i32 = match direction {
+        "up" => 120,
+        "down" => -120,
+        other => {
+            return Err(DesktopError::InputFailed(format!(
+                "unknown scroll direction: {other} (expected \"up\" or \"down\")"
+            )));
+        }
+    };
     #[cfg(windows)]
     {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_WHEEL};
-        let delta: i32 = if direction == "up" { 120 } else { -120 };
         for _ in 0..amount.max(0) {
             unsafe {
                 mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0);
@@ -141,7 +150,36 @@ pub async fn scroll(direction: &str, amount: i32) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let _ = (direction, amount);
+        let _ = (delta, amount);
+        Err(DesktopError::PlatformNotSupported)
+    }
+}
+
+/// Middle-click the mouse (mouse_event MIDDLEDOWN/UP on Windows).
+pub async fn middle_click(x: i32, y: i32) -> Result<()> {
+    move_to(x, y).await?;
+    #[cfg(windows)]
+    {
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+            mouse_event, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+        };
+        unsafe {
+            mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, 0);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        unsafe {
+            mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        enigo()?
+            .button(enigo::Button::Middle, enigo::Direction::Click)
+            .map_err(|e| DesktopError::InputFailed(e.to_string()))
+    }
+    #[cfg(all(not(windows), not(any(target_os = "macos", target_os = "linux"))))]
+    {
         Err(DesktopError::PlatformNotSupported)
     }
 }

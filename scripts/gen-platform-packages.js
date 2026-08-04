@@ -47,9 +47,22 @@ for (const p of PLATFORMS) {
       'nuphus-mcp': path.join('bin', p.exe),
     },
     files: ['bin'],
+    scripts: {
+      // Local-publish guard: refuses `npm publish` when bin/ holds a compiled
+      // binary (a workstation stale binary must never ship). CI packs via
+      // `npm pack` + `npm publish <tgz>`, which does not run prepublishOnly.
+      prepublishOnly: 'node ./scripts/check-clean-bin.js',
+    },
   };
 
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+  // The guard script ships with the package skeleton (single source of truth:
+  // the meta package's copy).
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.copyFileSync(
+    path.join(ROOT, 'npm', 'packages', 'nuphus-mcp', 'scripts', 'check-clean-bin.js'),
+    path.join(dir, 'scripts', 'check-clean-bin.js')
+  );
   // Placeholder so the dir is non-empty before CI copies the real binary in.
   const gitkeep = path.join(dir, 'bin', '.gitkeep');
   if (!fs.existsSync(gitkeep)) fs.writeFileSync(gitkeep, '');

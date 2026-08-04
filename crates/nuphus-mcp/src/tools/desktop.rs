@@ -267,9 +267,13 @@ async fn window_info(args: &Value) -> Result<String, String> {
 /// `NUPHUS_MCP_VISION_MODEL`; missing key → clear error. Auto-captures a screenshot when `path` is omitted.
 async fn vision(args: &Value) -> Result<String, String> {
     let prompt = args.get("prompt").and_then(Value::as_str);
-    let image_path = match args.get("path").and_then(Value::as_str) {
-        Some(p) => p.to_string(),
-        None => capture_to_temp().await?,
+    // `_temp` keeps the temp-BMP guard alive until the vision call completes.
+    let (image_path, _temp) = match args.get("path").and_then(Value::as_str) {
+        Some(p) => (p.to_string(), None),
+        None => {
+            let temp = TempCapture::capture().await?;
+            (temp.path().to_string(), Some(temp))
+        }
     };
     let text = crate::vision::vision_image(&image_path, prompt).await?;
     Ok(json!({ "description": text }).to_string())
@@ -283,10 +287,14 @@ async fn perceive(args: &Value) -> Result<String, String> {
     // 1. Ensure models are ready (auto-download missing OCR models)
     let status = crate::models::ensure_models().await?;
 
-    // 2. Obtain the image to analyze
-    let image_path = match args.get("path").and_then(Value::as_str) {
-        Some(p) => p.to_string(),
-        None => capture_to_temp().await?,
+    // 2. Obtain the image to analyze (`_temp` keeps the temp-BMP guard alive
+    // until inference completes; the file is deleted on every exit path).
+    let (image_path, _temp) = match args.get("path").and_then(Value::as_str) {
+        Some(p) => (p.to_string(), None),
+        None => {
+            let temp = TempCapture::capture().await?;
+            (temp.path().to_string(), Some(temp))
+        }
     };
 
     // 3. OCR + YOLO inference (CPU-intensive → spawn_blocking, avoid blocking the IO loop)
@@ -330,20 +338,46 @@ async fn perceive(args: &Value) -> Result<String, String> {
     Ok(result.to_string())
 }
 
-/// Screenshot to a temp file and return its path (fallback when vision/perceive have no path argument).
-async fn capture_to_temp() -> Result<String, String> {
-    let target = dummy_target();
-    let frame = desktop_api::vision::capture::capture(&target, Scope::Fullscreen)
-        .await
-        .map_err(|e| format!("screen capture failed: {}", e))?;
-    let bmp = encode_bmp(&frame)?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("nuphus_mcp_capture_{}.bmp", nanos));
-    std::fs::write(&path, &bmp).map_err(|e| format!("save temp capture failed: {}", e))?;
-    Ok(path.to_string_lossy().into_owned())
+/// Screenshot to a temp file and return a guard whose Drop deletes it (P2:
+/// `%TEMP%\nuphus_mcp_capture_*.bmp` used to accumulate ~8MB per call forever).
+/// The guard covers every early-return path of the caller.
+struct TempCapture {
+    path: String,
+}
+
+impl TempCapture {
+    async fn capture() -> Result<Self, String> {
+        let target = dummy_target();
+        let frame = desktop_api::vision::capture::capture(&target, Scope::Fullscreen)
+            .await
+            .map_err(|e| format!("screen capture failed: {}", e))?;
+        let bmp = encode_bmp(&frame)?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("nuphus_mcp_capture_{}.bmp", nanos));
+        std::fs::write(&path, &bmp).map_err(|e| format!("save temp capture failed: {}", e))?;
+        Ok(Self {
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl Drop for TempCapture {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            tracing::warn!(
+                "[desktop] temp capture cleanup failed ({}): {}",
+                self.path,
+                e
+            );
+        }
+    }
 }
 
 async fn mouse(args: &Value) -> Result<String, String> {
@@ -351,8 +385,17 @@ async fn mouse(args: &Value) -> Result<String, String> {
         .get("action")
         .and_then(Value::as_str)
         .ok_or_else(|| "action is required".to_string())?;
-    let x = args.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
-    let y = args.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
+    // Coordinate-carrying actions must fail loudly when x/y are missing —
+    // defaulting to (0,0) clicks/moves at the top-left screen corner by mistake.
+    let needs_xy = matches!(action, "move" | "hover" | "click" | "double_click");
+    let x = args.get("x").and_then(Value::as_i64).map(|v| v as i32);
+    let y = args.get("y").and_then(Value::as_i64).map(|v| v as i32);
+    if needs_xy && (x.is_none() || y.is_none()) {
+        return Err(format!(
+            "x and y are required for action={action} (got x={x:?}, y={y:?})"
+        ));
+    }
+    let (x, y) = (x.unwrap_or(0), y.unwrap_or(0));
 
     match action {
         "position" => {
@@ -386,7 +429,9 @@ async fn mouse(args: &Value) -> Result<String, String> {
                     "right" => input::mouse::right_click(x, y)
                         .await
                         .map_err(|e| format!("mouse right click failed: {}", e))?,
-                    "middle" => return Err("middle button click is not supported".to_string()),
+                    "middle" => input::mouse::middle_click(x, y)
+                        .await
+                        .map_err(|e| format!("mouse middle click failed: {}", e))?,
                     other => return Err(format!("unknown mouse button: {}", other)),
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -445,11 +490,14 @@ async fn input(args: &Value) -> Result<String, String> {
         .get("mode")
         .and_then(Value::as_str)
         .ok_or_else(|| "mode is required".to_string())?;
-    let hwnd = args
-        .get("hwnd")
-        .and_then(Value::as_i64)
-        .map(|v| v as isize)
-        .unwrap_or(0);
+    // hwnd omitted → explicit "current focus" semantics: resolve the actual
+    // foreground window instead of passing 0 (SetForegroundWindow(HWND(0)) always
+    // fails silently and text would go wherever focus happens to be, unverified).
+    let hwnd = match args.get("hwnd").and_then(Value::as_i64) {
+        Some(v) => v as isize,
+        None => desktop_api::platform::foreground_hwnd()
+            .ok_or_else(|| "hwnd is required (no foreground window to target)".to_string())?,
+    };
     let mut target = target_window(hwnd);
     let engine = InputEngine::new();
 
@@ -460,25 +508,38 @@ async fn input(args: &Value) -> Result<String, String> {
                 return Err("text is required for mode=type".to_string());
             }
             if text.len() > 500 {
-                // Long text goes through clipboard + paste. Save the previous clipboard
-                // content first and restore it right after pasting, so the user's
-                // clipboard isn't silently clobbered (F5).
+                // Long text goes through clipboard + paste. Snapshot the previous
+                // clipboard text first; restoration runs on EVERY exit path
+                // (including paste failure) so the user's clipboard is never
+                // silently clobbered. When the previous content is not text
+                // (image/files/empty), there is nothing to restore — keep the
+                // pasted text in place and warn, never wipe the clipboard.
                 let prev = desktop_api::clipboard::read_text().ok();
-                desktop_api::clipboard::write_text(text)
-                    .map_err(|e| format!("clipboard write failed: {}", e))?;
-                engine
-                    .hotkey(&mut target, &["ctrl", "v"])
-                    .await
-                    .map_err(|e| format!("paste failed: {}", e))?;
-                match prev {
-                    Some(saved) if !saved.is_empty() => {
-                        desktop_api::clipboard::write_text(&saved)
-                            .map_err(|e| format!("paste done but clipboard restore failed: {e}"))?;
+                let paste_result: Result<(), String> = async {
+                    desktop_api::clipboard::write_text(text)
+                        .map_err(|e| format!("clipboard write failed: {}", e))?;
+                    engine
+                        .hotkey(&mut target, &["ctrl", "v"])
+                        .await
+                        .map_err(|e| format!("paste failed: {}", e))
+                }
+                .await;
+                let restore_warning = match &prev {
+                    Some(saved) => desktop_api::clipboard::write_text(saved).err().map(|e| {
+                        format!("paste done but clipboard restore failed: {e}")
+                    }),
+                    None => {
+                        tracing::warn!(
+                            "[desktop_input] previous clipboard content was not text \
+                             (or unreadable); leaving the pasted text in the clipboard"
+                        );
+                        None
                     }
-                    // Nothing to restore (or unreadable clipboard) → leave it clean.
-                    _ => {
-                        let _ = desktop_api::clipboard::write_text("");
-                    }
+                };
+                // Propagate a paste failure only AFTER the restore attempt.
+                paste_result?;
+                if let Some(w) = restore_warning {
+                    return Err(w);
                 }
             } else {
                 engine

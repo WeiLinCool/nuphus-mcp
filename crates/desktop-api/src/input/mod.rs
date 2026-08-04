@@ -39,8 +39,27 @@ impl InputEngine {
         match target {
             #[cfg(windows)]
             Target::Window { .. } | Target::Tui { .. } => {
-                // Windows: SendInput Unicode
-                sendinput::send_unicode_text(text)?;
+                // Windows: SendInput Unicode. Pass the hwnd through and enable the
+                // session's own foreground verification (belt-and-suspenders after
+                // ensure_active): if focus slipped away between activation and
+                // injection, refuse to type into the wrong window.
+                let hwnd = match target {
+                    Target::Window { hwnd, .. } | Target::Tui { hwnd, .. } => *hwnd,
+                    _ => unreachable!("match arm guarantees a window target"),
+                };
+                let session = sendinput::InputSession {
+                    target_hwnd: Some(hwnd),
+                    verify_foreground: true,
+                    ..Default::default()
+                };
+                // SendInput + inter-character sleeps are blocking — keep them off
+                // the async runtime's worker threads.
+                let text = text.to_string();
+                tokio::task::spawn_blocking(move || sendinput::nuphus_input(&text, &session))
+                    .await
+                    .map_err(|e| {
+                        DesktopError::InputFailed(format!("input task join failed: {e}"))
+                    })??;
             }
             #[cfg(not(windows))]
             Target::Tui { .. } => {
@@ -66,6 +85,11 @@ impl InputEngine {
     ///
     /// Standalone window-activation entrypoint (originally an internal ensure_active capability), for
     /// consumers that need "activate only, no operation" (e.g. nuphus-mcp's desktop_window_activate).
+    ///
+    /// Activation is *verified*: an error is returned when the window is not in
+    /// the foreground after both SetForegroundWindow and the AttachThreadInput
+    /// fallback — callers must never type/click into the wrong window believing
+    /// activation succeeded.
     pub async fn activate(&self, target: &mut Target) -> Result<()> {
         self.ensure_active(target).await
     }
@@ -118,6 +142,17 @@ impl InputEngine {
                 // Force foreground: AttachThreadInput
                 self.force_foreground(hwnd).await?;
             }
+
+            // Post-activation verification: Windows foreground stealing is
+            // best-effort and can be refused. Never mark the target verified on
+            // wishful thinking — a wrong-window click/type is far worse than an
+            // honest error.
+            if !self.is_foreground(hwnd) {
+                return Err(DesktopError::InputFailed(format!(
+                    "window activation failed: hwnd {hwnd} is not in the foreground \
+                     after SetForegroundWindow + AttachThreadInput"
+                )));
+            }
         }
 
         target.verify();
@@ -156,5 +191,41 @@ impl InputEngine {
 
         sleep(Duration::from_millis(200)).await;
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// An invalid hwnd (0) can never become the foreground window — activation
+    /// must fail honestly instead of marking the target verified and typing into
+    /// whatever happens to have focus (P1-2a post-activation verification).
+    #[tokio::test]
+    async fn ensure_active_rejects_unactivatable_window() {
+        // Headless session with no foreground window: is_foreground(0) would
+        // spuriously pass — the failure path cannot be exercised there.
+        if crate::platform::foreground_hwnd().is_none() {
+            return;
+        }
+        let engine = InputEngine::new();
+        let mut target = Target::Window {
+            hwnd: 0,
+            title: String::new(),
+            verified: false,
+            gfx_backend: crate::core::GfxBackend::Unknown,
+        };
+        let err = engine
+            .activate(&mut target)
+            .await
+            .expect_err("hwnd=0 cannot be activated");
+        assert!(
+            err.to_string().contains("activation failed"),
+            "error must name the activation failure: {err}"
+        );
+        assert!(
+            !target.is_verified(),
+            "failed activation must not mark the target verified"
+        );
     }
 }

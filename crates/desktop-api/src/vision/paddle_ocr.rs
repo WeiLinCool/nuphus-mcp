@@ -11,6 +11,45 @@ use crate::vision::models::{
     resolve_models_dir, validate_ocr_models, PADDLE_DET_MODEL, PADDLE_DICT, PADDLE_REC_MODEL,
 };
 
+/// Ensure `ORT_DYLIB_PATH` points at a sane ONNX Runtime dylib **before** ort's
+/// one-shot loader runs (its `OnceLock` latches the first resolution).
+///
+/// ort otherwise resolves the bare name `onnxruntime.dll` through the OS search
+/// path, which can pick up a STALE copy (e.g. a v1.0 in System32) that loads but
+/// hangs session creation forever (documented in nuphus-mcp's build.rs). This
+/// bites cargo test binaries in particular: they live in `target/<profile>/deps/`
+/// while build scripts place the dylib one level up in `target/<profile>/`.
+///
+/// No-op when `ORT_DYLIB_PATH` is already set or no candidate exists (falls back
+/// to ort's default resolution, e.g. a properly deployed exe-adjacent dylib).
+pub fn ensure_ort_dylib() {
+    if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    const DYLIB_NAME: &str = "onnxruntime.dll";
+    #[cfg(target_os = "linux")]
+    const DYLIB_NAME: &str = "libonnxruntime.so";
+    #[cfg(target_os = "macos")]
+    const DYLIB_NAME: &str = "libonnxruntime.dylib";
+
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut dirs = exe.parent().map(|p| p.to_path_buf()).into_iter().collect::<Vec<_>>();
+    // Cargo puts test binaries in deps/ one level below the dylib.
+    if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
+        dirs.push(parent.to_path_buf());
+    }
+    for dir in dirs {
+        let candidate = dir.join(DYLIB_NAME);
+        if candidate.exists() {
+            std::env::set_var("ORT_DYLIB_PATH", &candidate);
+            return;
+        }
+    }
+}
+
 /// OCR text block (with position)
 #[derive(Debug, Clone)]
 pub struct OcrBlock {
@@ -26,12 +65,39 @@ pub struct PaddleOcr {
     det_session: ort::session::Session,
     rec_session: ort::session::Session,
     char_dict: Vec<String>,
+    /// Models directory this instance was built from — the process-wide singleton
+    /// rebuilds when the resolved directory changes (e.g. NUPHUS_MODELS_DIR switch).
+    models_dir: PathBuf,
 }
 
+/// Process-wide shared engine (P1: per-call construction re-read the 6623-line
+/// dictionary and re-committed both ONNX sessions on every single perceive).
+/// Inference is serialized by this mutex — ORT sessions are not re-entrant.
+static SHARED_OCR: std::sync::Mutex<Option<PaddleOcr>> = std::sync::Mutex::new(None);
+
 impl PaddleOcr {
+    /// Run `f` with the process-wide shared engine, initializing it on first use
+    /// and rebuilding it when the resolved models directory changed.
+    pub fn with_shared<R>(f: impl FnOnce(&mut PaddleOcr) -> Result<R, String>) -> Result<R, String> {
+        let mut guard = SHARED_OCR.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = Self::models_dir()?;
+        let rebuild = match guard.as_ref() {
+            Some(ocr) => ocr.models_dir != dir,
+            None => true,
+        };
+        if rebuild {
+            if guard.is_some() {
+                tracing::info!("[paddle-ocr] models directory changed, rebuilding engine");
+            }
+            *guard = Some(Self::new()?);
+        }
+        f(guard.as_mut().expect("engine initialized above"))
+    }
+
     /// Initialize the engine: load the detection model, recognition model, and character dictionary.
     /// Missing models return a clear error (including the missing paths, for download guidance).
     pub fn new() -> Result<Self, String> {
+        ensure_ort_dylib();
         let models_dir = Self::models_dir()?;
         validate_ocr_models(&models_dir)?;
 
@@ -66,6 +132,7 @@ impl PaddleOcr {
             det_session,
             rec_session,
             char_dict,
+            models_dir,
         })
     }
 
@@ -91,13 +158,13 @@ impl PaddleOcr {
         let mut results: Vec<OcrBlock> = Vec::new();
         for &(x1, y1, x2, y2) in &boxes {
             let (cx1, cy1, cx2, cy2) = Self::expand_box((x1, y1, x2, y2), img_w, img_h);
-            let crop = image::imageops::crop_imm(
-                img,
-                cx1,
-                cy1,
-                cx2.saturating_sub(cx1),
-                cy2.saturating_sub(cy1),
-            );
+            let (cw, ch) = (cx2.saturating_sub(cx1), cy2.saturating_sub(cy1));
+            // Degenerate detection boxes (zero width/height) would panic in
+            // crop_imm — skip them instead of crashing the pipeline.
+            if cw == 0 || ch == 0 {
+                continue;
+            }
+            let crop = image::imageops::crop_imm(img, cx1, cy1, cw, ch);
             let text = self.recognize(crop.to_image())?;
             if !text.is_empty() {
                 results.push(OcrBlock {
@@ -483,5 +550,71 @@ impl PaddleOcr {
             "model directory not found; set the NUPHUS_MODELS_DIR environment variable or ensure the model files are in the correct location"
                 .to_string()
         })
+    }
+}
+
+/// Trial-load an ONNX file into an ORT session — the strongest integrity check a
+/// downloaded model can get before being trusted as valid (used by nuphus-mcp's
+/// model downloader after the byte-level checks).
+pub fn onnx_session_loadable(path: &std::path::Path) -> Result<(), String> {
+    ensure_ort_dylib();
+    ort::session::Session::builder()
+        .map_err(|e| format!("failed to create session builder: {e}"))?
+        .commit_from_file(path)
+        .map_err(|e| format!("ONNX trial load failed for {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Garbage bytes must not pass the ORT trial load (download integrity gate).
+    #[test]
+    fn onnx_trial_load_rejects_garbage() {
+        let tmp = std::env::temp_dir().join("nuphus_desktop_api_onnx_garbage.onnx");
+        std::fs::write(&tmp, b"<html>404 not found</html>").unwrap();
+        let result = onnx_session_loadable(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        let err = result.expect_err("garbage must be rejected");
+        assert!(err.contains("ONNX trial load failed"), "err: {err}");
+    }
+
+    /// The shared engine must fail honestly (not panic, not poison the singleton)
+    /// when the models directory has no valid models — and must recover once the
+    /// directory changes. Exercises the singleton rebuild decision.
+    ///
+    /// Serializes with any other test touching NUPHUS_MODELS_DIR via a file-local lock.
+    #[test]
+    fn with_shared_rebuilds_on_models_dir_change() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let saved = std::env::var("NUPHUS_MODELS_DIR").ok();
+        let empty = std::env::temp_dir().join("nuphus_desktop_api_empty_models");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::env::set_var("NUPHUS_MODELS_DIR", &empty);
+
+        // Empty dir → honest error, singleton stays uninitialized.
+        let result = PaddleOcr::with_shared(|_| Ok(()));
+        let err = result.expect_err("empty models dir must fail");
+        assert!(
+            err.contains(PADDLE_DET_MODEL) || err.contains("model"),
+            "error names missing models: {err}"
+        );
+
+        // Point back to the real directory (if this machine has one): the
+        // singleton must rebuild against the new directory instead of latching
+        // the failure.
+        match saved {
+            Some(v) => std::env::set_var("NUPHUS_MODELS_DIR", v),
+            None => std::env::remove_var("NUPHUS_MODELS_DIR"),
+        }
+        if resolve_models_dir()
+            .map(|d| validate_ocr_models(&d).is_ok())
+            .unwrap_or(false)
+        {
+            PaddleOcr::with_shared(|_| Ok(())).expect("rebuild against real models dir");
+        }
     }
 }

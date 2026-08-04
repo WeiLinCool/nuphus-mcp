@@ -60,6 +60,14 @@ pub async fn execute(name: &str, args: &serde_json::Value) -> Result<ToolOutput,
         Err(e) => return Ok(ToolOutput::failure(e)),
     };
 
+    // Test-only panic hook: exercised by the server panic-guard test to prove a
+    // panicking tool cannot kill the process and that both locks above are
+    // released by RAII while the panic unwinds. Compiled out in production.
+    #[cfg(test)]
+    if name == "test_panic_tool" {
+        panic!("intentional test panic (automation lock guard must unwind safely)");
+    }
+
     let result = if name.starts_with("desktop_") {
         desktop::execute(name, args).await
     } else if name.starts_with("browser_") {
@@ -79,4 +87,39 @@ pub async fn execute(name: &str, args: &serde_json::Value) -> Result<ToolOutput,
 /// Whether the tool name exists (the set exposed by tools/list).
 pub fn has_tool(name: &str) -> bool {
     all_tools().iter().any(|t| t.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Every desktop_* tool registered in schemas must have a dispatch branch in
+    /// `tools/desktop.rs` — the desktop counterpart of browser.rs's
+    /// `dispatch_matches_schema` guard (which uses EXECUTABLE_BROWSER_TOOLS).
+    ///
+    /// desktop.rs is owned by another workstream and exposes no executable-tool
+    /// constant, so this guard statically verifies that every schema name appears
+    /// as a quoted match arm in the dispatch source. A schema/dispatch drift
+    /// otherwise only surfaces at tools/call time as "Unknown desktop tool".
+    #[test]
+    fn desktop_dispatch_matches_schema() {
+        let dispatch_src = include_str!("desktop.rs");
+        let registered: HashSet<&str> = all_tools()
+            .iter()
+            .map(|t| t.name)
+            .filter(|n| n.starts_with("desktop_"))
+            .collect();
+        assert!(
+            !registered.is_empty(),
+            "schemas must register at least one desktop_* tool"
+        );
+        for name in &registered {
+            let match_arm = format!("\"{name}\" =>");
+            assert!(
+                dispatch_src.contains(&match_arm),
+                "schemas::all_tools registers '{name}' but desktop.rs has no dispatch arm for it"
+            );
+        }
+    }
 }

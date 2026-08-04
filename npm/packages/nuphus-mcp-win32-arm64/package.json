@@ -18,5 +18,8 @@
   },
   "files": [
     "bin"
-  ]
+  ],
+  "scripts": {
+    "prepublishOnly": "node ./scripts/check-clean-bin.js"
+  }
 }

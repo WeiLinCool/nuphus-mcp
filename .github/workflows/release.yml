@@ -25,8 +25,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Gate 1 (foremost): tag ↔ meta package.json ↔ 5 platform package.json ↔
+  # Cargo.toml must all agree. A forgotten gen-platform-packages run or a
+  # version bump that only touched some sources fails HERE, before any build
+  # minute is burned or any ghost meta-release can reference platform packages
+  # that do not exist on npm.
+  preflight:
+    name: version consistency preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify tag and all version sources agree
+        run: node scripts/verify-release-versions.js --tag "${{ github.ref_name }}"
+
+  # Gate 2: never publish a tag whose commit fails tests. Runs the full unit
+  # suite plus the real-Chrome integration tests on the Windows runner
+  # (Chrome is preinstalled on windows-latest).
+  test:
+    name: test gate (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.arch }}
+      - name: Unit tests (all crates)
+        run: cargo test --workspace
+      - name: nuphus-browser integration tests (real Chrome)
+        run: cargo test -p nuphus-browser -- --ignored --test-threads=1
+
   build:
     name: build ${{ matrix.name }}
+    needs: [preflight, test]
     strategy:
       fail-fast: false
       matrix:
@@ -247,14 +281,31 @@ jobs:
         working-directory: dist
         run: |
           set -e
+          # Verify an E409 before treating it as success: the ONLY acceptable
+          # case is "this exact package at this exact version is already live"
+          # (idempotent job re-run). An E409 from anything else — e.g. a stale
+          # platform package versioned behind the meta — must FAIL, never pass
+          # silently (the 0.1.5 ghost-publish failure mode).
+          already_published() {
+            local tgz="$1" base ver pkgname seen
+            base=$(basename "$tgz")
+            ver="${base%.tgz}"; ver="${ver##*-}"
+            pkgname=$(tar -xOzf "$tgz" package/package.json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).name))")
+            [ -n "$pkgname" ] || return 1
+            seen=$(npm view "${pkgname}@${ver}" version 2>/dev/null) || true
+            [ "$seen" = "$ver" ]
+          }
           publish_pkg() {
             local tgz="$1"
             for i in 1 2 3 4 5; do
               local out
               out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; return 0; }
-              # E409: this exact version already exists (job re-run) → treat as success.
               if echo "$out" | grep -qE "E409|cannot publish over"; then
-                echo "ALREADY PUBLISHED: $tgz"; return 0
+                if already_published "$tgz"; then
+                  echo "ALREADY PUBLISHED (verified via npm view): $tgz"; return 0
+                fi
+                echo "E409 but the exact package@version is NOT visible on npm — failing instead of a false success: $tgz"
+                return 1
               fi
               # npm's anti-spam heuristics flag rapid-fire NEW package names from
               # fresh accounts; usually transient → back off and retry.
@@ -298,7 +349,17 @@ jobs:
           for tgz in "$meta_dist"/*.tgz; do
             for i in 1 2 3 4 5; do
               out=$(npm publish "$tgz" --access public 2>&1) && { echo "OK: $tgz"; ok=1; break; }
-              if echo "$out" | grep -qE "E409|cannot publish over"; then echo "ALREADY PUBLISHED: $tgz"; ok=1; break; fi
+              # E409: only "this exact package@version is already live" counts as
+              # success (idempotent re-run) — verify via npm view, never assume.
+              if echo "$out" | grep -qE "E409|cannot publish over"; then
+                base=$(basename "$tgz"); ver="${base%.tgz}"; ver="${ver##*-}"
+                pkgname=$(tar -xOzf "$tgz" package/package.json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).name))")
+                seen=$(npm view "${pkgname}@${ver}" version 2>/dev/null) || true
+                if [ -n "$pkgname" ] && [ "$seen" = "$ver" ]; then
+                  echo "ALREADY PUBLISHED (verified via npm view): ${pkgname}@${ver}"; ok=1; break
+                fi
+                echo "FATAL: E409 but ${pkgname}@${ver} is NOT visible on npm — refusing to treat as success"; exit 1
+              fi
               if echo "$out" | grep -qiE "spam detection|triggered spam"; then echo "spam-blocked, retry $i/5: $tgz"; sleep $((i * 12)); continue; fi
               echo "publish failed (attempt $i): $tgz"; echo "$out" | tail -3; sleep 10
             done
