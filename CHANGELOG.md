@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `browser_*` tool registered in `schemas::all_tools` has a dispatch branch
   (enforced by `EXECUTABLE_BROWSER_TOOLS`), so a future schema/dispatch drift
   fails CI instead of surfacing at runtime.
+- **npm platform package scope (release-blocking)**: `gen-platform-packages.js`
+  generated unscoped names (`nuphus-mcp-win32-x64`) while the registry packages
+  are `@nuphus/nuphus-mcp-*`. Publishing the unscoped name made npm treat each
+  platform package as brand-new and return 403 spam detection — the 0.1.5 CI
+  publish failed for this reason. Script now emits the scoped name (directory
+  layout unchanged), and 0.1.6 was published from the corrected packages.
 
 ## [0.1.0] - 2026-07-31
 

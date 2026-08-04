@@ -25,8 +25,11 @@ const PLATFORMS = [
 ];
 
 for (const p of PLATFORMS) {
-  const pkgName = `nuphus-mcp-${p.platform}-${p.arch}`;
-  const dir = path.join(OUT_DIR, pkgName);
+  // Scoped package name — must match the name the meta package depends on.
+  // Regression: an unscoped name ("nuphus-mcp-win32-x64") made npm treat each
+  // platform package as a brand-new package and trigger spam detection (E403).
+  const pkgName = `@nuphus/nuphus-mcp-${p.platform}-${p.arch}`;
+  const dir = path.join(OUT_DIR, `nuphus-mcp-${p.platform}-${p.arch}`);
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
 
   const manifest = {

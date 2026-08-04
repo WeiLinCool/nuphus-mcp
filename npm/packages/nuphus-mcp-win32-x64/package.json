@@ -1,5 +1,5 @@
 {
-  "name": "nuphus-mcp-win32-x64",
+  "name": "@nuphus/nuphus-mcp-win32-x64",
   "version": "0.1.6",
   "description": "nuphus-mcp binary for win32 x64. Installed automatically by the nuphus-mcp meta package.",
   "license": "MIT",
