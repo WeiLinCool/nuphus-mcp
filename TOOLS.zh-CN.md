@@ -520,13 +520,21 @@ DOM 遍历。`@N` 引用可用于 `browser_click` / `browser_type`。
 通过 CSS 选择器或快照中的引用 ID（如 `@1`、`@e0`、`'button'`）点击元素。
 CSS 选择器路径会在点击前自动等待元素出现并可见（最多 5 秒）。
 
+默认点击是 JS 合成事件（可靠、可穿透遮挡层），但**不产生**用户激活（user activation）。
+传入 `trusted: true` 可改为在元素中心派发真实 CDP 鼠标事件（`isTrusted=true`）——
+用于解锁受自动播放策略限制的音视频播放等需要真实用户手势的场景。
+
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
 | `selector` | string | **是** | - | CSS 选择器或引用 ID（如 `@1`、`@e0`、`'button'`） |
+| `trusted` | boolean | 否 | `false` | 派发真实可信 CDP 鼠标事件（产生用户激活）替代 JS 点击。用于自动播放受限的媒体播放等手势受限场景。 |
 
 **示例**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click","arguments":{"selector":"@1"}}}
+```
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_click","arguments":{"selector":"button.play","trusted":true}}}
 ```
 **返回** 点击确认，随后带 `── Page state ──` 页面快照。
 

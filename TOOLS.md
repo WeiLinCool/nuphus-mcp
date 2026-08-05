@@ -552,13 +552,22 @@ Click element by CSS selector or ref ID from snapshot (e.g. `@1`, `@e0`,
 `'button'`). CSS selector paths auto-wait for the element to appear and become
 visible (up to 5s) before clicking.
 
+Default clicks are JS-synthesized (reliable, ignore overlays) but do NOT
+produce user activation. Pass `trusted: true` to dispatch real CDP mouse
+events (`isTrusted=true`) at the element's center — required to unlock
+autoplay-gated audio/video playback and other gesture-gated features.
+
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `selector` | string | **yes** | - | CSS selector or ref ID (e.g. `@1`, `@e0`, `'button'`) |
+| `trusted` | boolean | no | `false` | Dispatch real trusted CDP mouse events (produces user activation) instead of a JS click. Use for autoplay-gated media playback and gesture-gated features. |
 
 **Example**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_click","arguments":{"selector":"@1"}}}
+```
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_click","arguments":{"selector":"button.play","trusted":true}}}
 ```
 **Returns** click confirmation followed by a `── Page state ──` snapshot.
 
