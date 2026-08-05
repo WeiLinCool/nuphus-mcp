@@ -91,6 +91,31 @@ failing.
 | `NUPHUS_MCP_VISION_BASE_URL` | — | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `NUPHUS_MCP_VISION_MODEL` | ✅ | — | Model id, e.g. `gpt-4o-mini`, `qwen-vl-max` |
 
+### External browser (anti-detect / fingerprint browsers)
+
+By default `browser_*` tools launch and manage their own Chrome instance. To
+drive an **external browser** instead — e.g. an anti-detect / fingerprint
+browser — start it with a debugging port and point the server at it:
+
+| Environment variable | Required | Default | Description |
+|----------------------|----------|---------|-------------|
+| `NUPHUS_MCP_BROWSER_CDP_URL` | — | — | External CDP endpoint, e.g. `http://127.0.0.1:9222` |
+
+```sh
+# Example: start your fingerprint browser with a debugging port
+chrome --remote-debugging-port=9222 --user-data-dir=...
+```
+
+```jsonc
+// MCP client config
+"env": { "NUPHUS_MCP_BROWSER_CDP_URL": "http://127.0.0.1:9222" }
+```
+
+When set, `browser_*` tools attach to that endpoint and never launch a managed
+Chrome; attach failures are hard errors (no silent fallback into the wrong
+browser). The external browser belongs to you — the server never kills it on
+exit.
+
 ### Perceive models (local, auto-downloaded)
 
 `desktop_perceive` runs PaddleOCR locally with ONNX Runtime. The first call

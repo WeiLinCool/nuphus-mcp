@@ -80,6 +80,30 @@ nuphus-mcp/
 | `NUPHUS_MCP_VISION_BASE_URL` | — | `https://api.openai.com/v1` | OpenAI 兼容 base URL |
 | `NUPHUS_MCP_VISION_MODEL` | ✅ | — | 模型 ID，如 `gpt-4o-mini`、`qwen-vl-max` |
 
+### 对接外部浏览器（反检测 / 指纹浏览器）
+
+默认情况下 `browser_*` 工具启动并管理自己的 Chrome 实例。若要改为驱动
+**外部浏览器**——例如反检测 / 指纹浏览器——用调试端口启动它，并把地址
+告诉 server：
+
+| 环境变量 | 必填 | 默认值 | 说明 |
+|----------|------|--------|------|
+| `NUPHUS_MCP_BROWSER_CDP_URL` | — | — | 外部 CDP 端点，如 `http://127.0.0.1:9222` |
+
+```sh
+# 示例：用调试端口启动你的指纹浏览器
+chrome --remote-debugging-port=9222 --user-data-dir=...
+```
+
+```jsonc
+// MCP 客户端配置
+"env": { "NUPHUS_MCP_BROWSER_CDP_URL": "http://127.0.0.1:9222" }
+```
+
+配置后，`browser_*` 工具将 attach 到该端点，不再启动托管 Chrome；attach
+失败会返回明确错误（不会静默回退到错误的浏览器）。外部浏览器归你所有——
+server 退出时不会杀掉它。
+
 ### perceive 模型（本地，自动下载）
 
 `desktop_perceive` 用 ONNX Runtime 本地运行 PaddleOCR。首次调用自动下载 OCR

@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Trusted click mode** — `browser_click` gains an optional `trusted`
+  parameter (default `false`). When `true`, the click is dispatched as real
+  CDP `Input.dispatchMouseEvent` events (`isTrusted=true`, produces user
+  activation) instead of a JS-synthesized `el.click()` — required to unlock
+  autoplay-gated audio/video playback and other gesture-gated features.
+  Default JS click behavior is unchanged.
+- **External browser support** — set `NUPHUS_MCP_BROWSER_CDP_URL` (e.g.
+  `http://127.0.0.1:9222`) to attach all `browser_*` tools to a user-started
+  external browser (anti-detect / fingerprint browsers) instead of launching a
+  managed Chrome. Attach failures are hard errors (no silent fallback); the
+  external instance is never killed on exit. Endpoint discovery bypasses the
+  system proxy (`no_proxy`).
+
 ## [0.1.7] - 2026-08-04
 
 ### Fixed

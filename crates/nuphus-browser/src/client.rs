@@ -272,6 +272,11 @@ pub struct BrowserClient {
     /// Headed mode is a functional superset: a headed instance also serves
     /// headless requests; a headless instance is upgraded on headed request.
     launched_headless: Option<bool>,
+    /// External CDP endpoint (e.g. an anti-detect/fingerprint browser started by
+    /// the user with `--remote-debugging-port`). Set via the
+    /// `NUPHUS_MCP_BROWSER_CDP_URL` environment variable. When set, `launch()`
+    /// attaches to this endpoint instead of launching/attaching our own Chrome.
+    external_cdp_url: Option<String>,
 }
 
 /// Interactive ARIA roles to include in the snapshot output.
@@ -473,6 +478,14 @@ fn extract_subtree_children(
 }
 
 impl BrowserClient {
+    /// Read the external CDP endpoint from the environment (shared by both constructors).
+    fn external_cdp_url_from_env() -> Option<String> {
+        std::env::var("NUPHUS_MCP_BROWSER_CDP_URL")
+            .ok()
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// Create new BrowserClient (does not launch browser)
     pub fn new() -> Result<Self, ChromeError> {
         let chrome_path = find_chrome()?;
@@ -491,6 +504,7 @@ impl BrowserClient {
             download_config_warning: None,
             child_process: None,
             launched_headless: None,
+            external_cdp_url: Self::external_cdp_url_from_env(),
         })
     }
 
@@ -511,6 +525,7 @@ impl BrowserClient {
             download_config_warning: None,
             child_process: None,
             launched_headless: None,
+            external_cdp_url: Self::external_cdp_url_from_env(),
         })
     }
 
@@ -531,6 +546,15 @@ impl BrowserClient {
     /// [`Self::reconnect`] + [`Self::is_connection_error`]) then resets, relaunches
     /// and retries the operation once.
     pub async fn launch(&mut self, headless: bool) -> Result<(), BrowserError> {
+        // External CDP endpoint configured (e.g. a user-started anti-detect /
+        // fingerprint browser): attach to it and NEVER launch our own Chrome.
+        // Falling back silently would run automations in the wrong browser while
+        // the user believes the fingerprint browser is being driven — so any
+        // attach failure here is a hard, explicit error.
+        if self.external_cdp_url.is_some() {
+            return self.attach_external().await;
+        }
+
         // Idempotency + liveness probe. self.browser may be Some while the underlying CDP
         // handler is gone (shared Chrome killed by an external process); without any check we
         // would return Ok(()) and every later call would fail with "receiver is gone". The
@@ -773,6 +797,106 @@ impl BrowserClient {
                 ),
                 Err(_) => tracing::warn!(
                     "[Browser] fetch_targets after attach timed out (existing tabs may be missing)"
+                ),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Attach to the external CDP endpoint configured via `NUPHUS_MCP_BROWSER_CDP_URL`
+    /// (e.g. `http://127.0.0.1:9222` of a user-started anti-detect/fingerprint browser).
+    ///
+    /// Discovers the browser-level WebSocket URL via the endpoint's `GET /json/version`,
+    /// then connects like `try_attach` does. The attached instance belongs to the user:
+    /// `child_process` stays `None` so `close` never kills it, and `launched_headless`
+    /// stays `None` so no headless→headed upgrade restart is attempted. Failures are
+    /// hard errors (no fallback to a managed Chrome — see `launch`).
+    async fn attach_external(&mut self) -> Result<(), BrowserError> {
+        let base = self
+            .external_cdp_url
+            .clone()
+            .expect("attach_external called without external_cdp_url");
+
+        // Idempotency: a live connection serves all later calls.
+        if self.browser.is_some() && self.is_connection_alive().await {
+            return Ok(());
+        }
+
+        // Discover the browser-level ws URL via the CDP HTTP endpoint.
+        // no_proxy: a CDP endpoint is an infrastructure address (loopback or an
+        // explicit host) and must never be routed through the system proxy — a
+        // proxy would hijack the request and break discovery with opaque errors.
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|e| BrowserError::Launch(format!("http client build failed: {e}")))?;
+        let version_url = format!("{base}/json/version");
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            http.get(&version_url).send(),
+        )
+        .await
+        .map_err(|_| {
+            BrowserError::Launch(format!(
+                "external browser at {base} did not answer /json/version within 5s — \
+                 is it running with --remote-debugging-port?"
+            ))
+        })?
+        .map_err(|e| {
+            BrowserError::Launch(format!(
+                "external browser at {base} unreachable: {e} — start it with \
+                 --remote-debugging-port and check NUPHUS_MCP_BROWSER_CDP_URL"
+            ))
+        })?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            BrowserError::Launch(format!("{base}/json/version: invalid JSON: {e}"))
+        })?;
+        let ws_url = body
+            .get("webSocketDebuggerUrl")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                BrowserError::Launch(format!(
+                    "{base}/json/version: missing webSocketDebuggerUrl"
+                ))
+            })?
+            .to_string();
+
+        let (browser, mut handler) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), Browser::connect(&ws_url))
+                .await
+                .map_err(|_| {
+                    BrowserError::Launch(format!("external browser ws connect timed out: {ws_url}"))
+                })?
+                .map_err(|e| {
+                    BrowserError::Launch(format!("external browser ws connect failed: {e}"))
+                })?;
+
+        // Start handler running in background (same lifetime as the launch path)
+        tokio::spawn(async move { while handler.next().await.is_some() {} });
+
+        tracing::info!("[Browser] attached to external browser ({})", base);
+        let browser_arc = Arc::new(Mutex::new(browser));
+        self.browser = Some(browser_arc.clone());
+        self.child_process = None; // external instance belongs to the user; close must not kill it
+        self.launched_headless = None; // mode unknown; no headless→headed upgrade restart
+
+        // A2: actively pull existing targets after attaching (same rationale as try_attach;
+        // failure is warn-only — the connection itself is established).
+        {
+            let mut browser_guard = browser_arc.lock().await;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                browser_guard.fetch_targets(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    "[Browser] fetch_targets after external attach failed (existing tabs may be missing): {e}"
+                ),
+                Err(_) => tracing::warn!(
+                    "[Browser] fetch_targets after external attach timed out (existing tabs may be missing)"
                 ),
             }
         }

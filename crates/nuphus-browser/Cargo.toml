@@ -33,6 +33,10 @@ xcap = "0.9"
 # File upload base64 encoding
 base64 = "0.22"
 
+# External CDP endpoint discovery (GET {url}/json/version, plain HTTP only)
+# Reuses the reqwest 0.13 already pulled in by chromiumoxide — no new dependency tree.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+
 # MIME detection (file upload)
 mime_guess = "2"
 
