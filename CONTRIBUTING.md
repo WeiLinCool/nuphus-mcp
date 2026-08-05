@@ -18,7 +18,7 @@ tools, plus the two crates it depends on.
 ### Quick start
 
 ```bash
-git clone https://github.com/nuphus/nuphus-mcp.git
+git clone https://github.com/mrpulor-gh/nuphus-mcp.git
 cd nuphus-mcp
 
 # check the workspace compiles

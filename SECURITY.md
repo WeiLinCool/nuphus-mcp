@@ -21,7 +21,7 @@ We take security vulnerabilities seriously. If you discover a security issue in
 ### Report Channels
 
 - **GitHub Security Advisory**:
-  [https://github.com/nuphus/nuphus-mcp/security/advisories/new](https://github.com/nuphus/nuphus-mcp/security/advisories/new)
+   [https://github.com/mrpulor-gh/nuphus-mcp/security/advisories/new](https://github.com/mrpulor-gh/nuphus-mcp/security/advisories/new)
 
 ### Response Commitment
 

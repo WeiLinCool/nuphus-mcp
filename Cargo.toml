@@ -9,6 +9,6 @@ members = [
 # Workspace-level metadata template: future crates can inherit via `license.workspace = true`.
 [workspace.package]
 license = "MIT"
-repository = "https://github.com/nuphus/nuphus-mcp"
-homepage = "https://github.com/nuphus/nuphus-mcp"
-documentation = "https://github.com/nuphus/nuphus-mcp"
+repository = "https://github.com/mrpulor-gh/nuphus-mcp"
+homepage = "https://github.com/mrpulor-gh/nuphus-mcp"
+documentation = "https://github.com/mrpulor-gh/nuphus-mcp"

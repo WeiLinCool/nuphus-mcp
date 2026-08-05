@@ -3,7 +3,7 @@ name = "nuphus-mcp"
 version = "0.1.7"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/nuphus/nuphus-mcp"
+repository = "https://github.com/mrpulor-gh/nuphus-mcp"
 description = "Desktop automation MCP server — computer use for any AI agent: control screen, windows, mouse/keyboard, and Chrome via Model Context Protocol (stdio)"
 authors = ["Nuphus Team"]
 

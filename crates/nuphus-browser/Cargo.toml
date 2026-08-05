@@ -3,7 +3,7 @@ name = "nuphus-browser"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/nuphus/nuphus-mcp"
+repository = "https://github.com/mrpulor-gh/nuphus-mcp"
 description = "Nuphus browser automation core (CDP, chromiumoxide) - shared by nuphus and nuphus-mcp"
 authors = ["Nuphus Team"]
 
