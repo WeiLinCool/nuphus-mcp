@@ -239,33 +239,43 @@ impl McpServer {
     }
 }
 
-/// Execute a tool in an isolated task so a panicking tool cannot take down the
-/// whole server process (P1 guard). A tool panic crosses the JoinHandle as a
-/// `JoinError` and is converted into a semantic tool failure (`isError: true`
+/// Execute a tool with a panic guard so a panicking tool cannot take down the
+/// whole server process (P1 guard). A tool panic is caught by `catch_unwind`
+/// and converted into a semantic tool failure (`isError: true`
 /// with a sanitized "internal error" message) instead of unwinding through
 /// `#[tokio::main]` and killing every connected Agent's server.
 ///
 /// Lock safety: the process-wide tokio Mutex guard and the cross-process file
-/// lock guard both live *inside* the spawned future. Unwinding drops that
+/// lock guard both live *inside* the guarded future. Unwinding drops that
 /// future, so both guards are released by RAII — a panicking tool never wedges
 /// the automation locks (covered by `panicking_tool_returns_is_error_and_server_survives`).
+///
+/// Why `catch_unwind` instead of `tokio::spawn`: spawning would require the
+/// tool future to be `Send`, but the desktop input chain holds `!Send` FFI
+/// handles across await points on some platforms (e.g. macOS enigo's
+/// `NonNull<CGEventSource>`). Catching unwinds on the current task gives the
+/// same panic isolation without a `Send` bound.
 async fn execute_tool_isolated(
     name: String,
     args: Value,
 ) -> Result<tools::ToolOutput, String> {
+    use futures_util::FutureExt;
     let log_name = name.clone();
-    tokio::spawn(async move { tools::execute(&name, &args).await })
-        .await
-        .unwrap_or_else(|join_err| {
-            if join_err.is_panic() {
-                tracing::error!("[mcp] tool '{}' panicked: {}", log_name, join_err);
-            } else {
-                tracing::error!("[mcp] tool '{}' task cancelled: {}", log_name, join_err);
-            }
+    let fut = std::panic::AssertUnwindSafe(tools::execute(&name, &args));
+    match fut.catch_unwind().await {
+        Ok(res) => res,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            tracing::error!("[mcp] tool '{}' panicked: {}", log_name, detail);
             Ok(tools::ToolOutput::failure(
                 "internal error: tool execution failed unexpectedly; the server is still alive",
             ))
-        })
+        }
+    }
 }
 
 #[cfg(test)]
