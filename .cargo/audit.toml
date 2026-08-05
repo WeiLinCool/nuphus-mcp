@@ -1,0 +1,17 @@
+# cargo-audit configuration
+#
+# Ignored advisories (with rationale):
+#
+# RUSTSEC-2026-0194 / RUSTSEC-2026-0195 — quick-xml 0.30.0 (high, DoS)
+#   - Reachable ONLY as a build-dependency of `xcb 1.7.0` (build script parses
+#     X11 XML protocol definitions bundled inside the xcb crate itself).
+#   - Input is trusted, crate-bundled XML — not runtime, not external, not
+#     network-reachable. Never compiled into the shipped binary.
+#   - No fix path: xcb 1.7.0 (latest) pins quick-xml exactly "0.30.0" and the
+#     0.30 line has no patched release; the fix (>=0.41.0) requires an upstream
+#     xcb release. Revisit when xcb bumps its dependency.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

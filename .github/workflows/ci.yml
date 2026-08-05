@@ -93,10 +93,10 @@ jobs:
   audit:
     name: cargo audit (advisory)
     runs-on: ubuntu-latest
-    # Advisory-only rollout: known-vulnerability advisories become VISIBLE in CI
-    # without blocking merges. Flip continue-on-error off once the current
-    # advisory backlog is triaged.
-    continue-on-error: true
+    # Hard gate since v0.1.8: the advisory backlog (RUSTSEC-2026-0194/0195,
+    # quick-xml build-dep via xcb) is triaged in .cargo/audit.toml with rationale.
+    # New vulnerabilities now block merges.
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
