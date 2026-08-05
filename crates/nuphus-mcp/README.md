@@ -244,7 +244,7 @@ set NUPHUS_MCP_DUAL=off
 ## Tests
 
 ```sh
-cargo test -p nuphus-mcp          # protocol + security + vision + models tests (28)
+cargo test -p nuphus-mcp          # protocol + security + vision + models tests (60)
 cargo test -p nuphus-browser      # browser unit tests
 cargo test -p nuphus --lib workflow  # main app workflow regression (52)
 

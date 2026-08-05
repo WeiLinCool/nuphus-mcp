@@ -133,6 +133,44 @@ responses to stdout. Logs go to stderr.
 echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | nuphus-mcp
 ```
 
+## 🔒 Recommended: enable strict confirmation
+
+This server can physically control the machine it runs on. By default write
+tools run **without** confirmation; we strongly recommend enabling strict
+confirmation so destructive operations require an explicit `"confirm": true`
+argument from the client (otherwise the tool is rejected with `isError`).
+
+**Any one of the following:**
+
+```sh
+# CLI flag
+nuphus-mcp --confirm-write
+
+# Environment variable (recommended — survives across clients, keeps config simple)
+export NUPHUS_MCP_CONFIRM_WRITE=1      # macOS / Linux
+setx NUPHUS_MCP_CONFIRM_WRITE 1        # Windows (persistent for new shells)
+
+# MCP client args
+"args": ["--confirm-write"]
+```
+
+**Claude Desktop** — recommended `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "nuphus-mcp",
+      "args": ["--confirm-write"]
+    }
+  }
+}
+```
+
+> Prefer the environment variable: one setting applies to every MCP client on
+> the machine. See [SECURITY.md](SECURITY.md) and the [Safety Annotations
+> section of TOOLS.md](TOOLS.md#safety-annotations) for the full threat model.
+
 ## MCP Client Configuration
 
 Point any MCP client at `nuphus-mcp`. After `npm install -g
@@ -183,7 +221,7 @@ cargo run -p nuphus-mcp --example demo
 
 ```sh
 cargo check --workspace
-cargo test -p nuphus-mcp          # protocol + security + vision + models tests (28)
+cargo test -p nuphus-mcp          # protocol + security + vision + models tests (60)
 ```
 
 ## Safety

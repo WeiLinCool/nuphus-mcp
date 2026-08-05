@@ -120,6 +120,42 @@ stderr。
 echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test"}}}' | nuphus-mcp
 ```
 
+## 🔒 推荐：开启严格确认（strict confirmation）
+
+该 server 能物理控制它所在的机器。默认情况下写工具**不要求确认**即执行；我们
+**强烈建议**开启严格确认，使破坏性操作必须由客户端显式携带 `"confirm": true`
+参数（否则工具以 `isError` 拒绝）。
+
+**以下任一方式即可开启：**
+
+```sh
+# 命令行参数
+nuphus-mcp --confirm-write
+
+# 环境变量（推荐 —— 对所有客户端生效，配置最简单）
+export NUPHUS_MCP_CONFIRM_WRITE=1      # macOS / Linux
+setx NUPHUS_MCP_CONFIRM_WRITE 1        # Windows（持久生效，新开的 shell）
+
+# MCP 客户端 args
+"args": ["--confirm-write"]
+```
+
+**Claude Desktop** —— 推荐的 `claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "nuphus-mcp",
+      "args": ["--confirm-write"]
+    }
+  }
+}
+```
+
+> 优先使用环境变量：一条设置对本机所有 MCP 客户端生效。完整威胁模型见
+> [SECURITY.md](SECURITY.md) 与 [TOOLS.md 的安全标注章节](TOOLS.md#safety-annotations)。
+
 ## MCP 客户端配置
 
 把任意 MCP 客户端指向 `nuphus-mcp` 即可。`npm install -g
