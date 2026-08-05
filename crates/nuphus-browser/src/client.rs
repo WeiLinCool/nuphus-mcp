@@ -2539,6 +2539,25 @@ impl BrowserClient {
         Ok(())
     }
 
+    /// Update the external CDP endpoint at runtime (UI-driven configuration).
+    /// Closes any existing connection so the next `launch()` re-attaches with the
+    /// new configuration; `None` (or empty) returns to managed-Chrome behavior.
+    /// `close` semantics apply: an external attach is only disconnected (never
+    /// kills the user's browser), a managed Chrome is shut down.
+    pub async fn set_external_cdp_url(&mut self, url: Option<String>) -> Result<(), BrowserError> {
+        let normalized = url
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty());
+        if self.external_cdp_url == normalized {
+            return Ok(());
+        }
+        if self.browser.is_some() {
+            self.close().await?;
+        }
+        self.external_cdp_url = normalized;
+        Ok(())
+    }
+
     /// Whether the Chromium child process launched by this client is still running:
     /// `Some(true)` alive / `Some(false)` exited / `None` no child (attached instance
     /// or handle already consumed). Used to gate reconnect-kill: a live process with
