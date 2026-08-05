@@ -61,45 +61,46 @@ fn dummy_target() -> Target {
     }
 }
 
-/// Screenshot → BMP bytes
-fn encode_bmp(frame: &desktop_api::Frame) -> Result<Vec<u8>, String> {
+/// Screenshot → PNG bytes (lossless; LLM APIs and template matching both accept PNG)
+fn encode_png(frame: &desktop_api::Frame) -> Result<Vec<u8>, String> {
     let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.pixels.clone())
         .ok_or_else(|| format!("invalid frame dimensions {}x{}", frame.width, frame.height))?;
     let mut cursor = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(img)
-        .write_to(&mut cursor, image::ImageFormat::Bmp)
-        .map_err(|e| format!("BMP encode failed: {}", e))?;
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode failed: {}", e))?;
     Ok(cursor.into_inner())
 }
 
-/// Save or inline-return the BMP, unified output {path|data, width, height, size}
-fn output_bmp(
+/// Save or inline-return the PNG, unified output {path|data, width, height, size}
+fn output_png(
     path: Option<&str>,
     frame: &desktop_api::Frame,
-    bmp: &[u8],
+    png: &[u8],
 ) -> Result<String, String> {
     match path {
         Some(p) => {
             // Security boundary: path validation (path traversal / system-protected dirs / parent exists)
             let validated = crate::security::validate_screenshot_path(p)?;
-            let final_path = if validated.to_lowercase().ends_with(".bmp") {
+            let final_path = if validated.to_lowercase().ends_with(".png") {
                 validated
             } else {
-                format!("{}.bmp", validated)
+                format!("{}.png", validated)
             };
-            std::fs::write(&final_path, bmp).map_err(|e| format!("save failed: {}", e))?;
+            std::fs::write(&final_path, png).map_err(|e| format!("save failed: {}", e))?;
             Ok(json!({
                 "path": final_path,
-                "size": bmp.len(),
+                "format": "png",
+                "size": png.len(),
                 "width": frame.width,
                 "height": frame.height,
             })
             .to_string())
         }
         None => {
-            let data = base64::engine::general_purpose::STANDARD.encode(bmp);
+            let data = base64::engine::general_purpose::STANDARD.encode(png);
             Ok(json!({
-                "format": "bmp",
+                "format": "png",
                 "data": data,
                 "width": frame.width,
                 "height": frame.height,
@@ -138,9 +139,9 @@ async fn screenshot(args: &Value) -> Result<String, String> {
                 .map_err(|e| format!("screen capture failed: {}", e))?
         }
     };
-    let bmp = encode_bmp(&frame)?;
+    let png = encode_png(&frame)?;
     let path = args.get("path").and_then(Value::as_str);
-    output_bmp(path, &frame, &bmp)
+    output_png(path, &frame, &png)
 }
 
 async fn windows_list() -> Result<String, String> {
@@ -197,9 +198,9 @@ async fn window_screenshot(args: &Value) -> Result<String, String> {
     let frame = desktop_api::vision::capture::capture(&target, Scope::Window)
         .await
         .map_err(|e| format!("window capture failed: {}", e))?;
-    let bmp = encode_bmp(&frame)?;
+    let png = encode_png(&frame)?;
     let path = args.get("path").and_then(Value::as_str);
-    output_bmp(path, &frame, &bmp)
+    output_png(path, &frame, &png)
 }
 
 /// Move the window to the given coordinates (Windows: SetWindowPos).
@@ -267,7 +268,7 @@ async fn window_info(args: &Value) -> Result<String, String> {
 /// `NUPHUS_MCP_VISION_MODEL`; missing key → clear error. Auto-captures a screenshot when `path` is omitted.
 async fn vision(args: &Value) -> Result<String, String> {
     let prompt = args.get("prompt").and_then(Value::as_str);
-    // `_temp` keeps the temp-BMP guard alive until the vision call completes.
+    // `_temp` keeps the temp-PNG guard alive until the vision call completes.
     let (image_path, _temp) = match args.get("path").and_then(Value::as_str) {
         Some(p) => (p.to_string(), None),
         None => {
@@ -287,7 +288,7 @@ async fn perceive(args: &Value) -> Result<String, String> {
     // 1. Ensure models are ready (auto-download missing OCR models)
     let status = crate::models::ensure_models().await?;
 
-    // 2. Obtain the image to analyze (`_temp` keeps the temp-BMP guard alive
+    // 2. Obtain the image to analyze (`_temp` keeps the temp-PNG guard alive
     // until inference completes; the file is deleted on every exit path).
     let (image_path, _temp) = match args.get("path").and_then(Value::as_str) {
         Some(p) => (p.to_string(), None),
@@ -339,7 +340,7 @@ async fn perceive(args: &Value) -> Result<String, String> {
 }
 
 /// Screenshot to a temp file and return a guard whose Drop deletes it (P2:
-/// `%TEMP%\nuphus_mcp_capture_*.bmp` used to accumulate ~8MB per call forever).
+/// `%TEMP%\nuphus_mcp_capture_*.png` used to accumulate ~8MB per call forever).
 /// The guard covers every early-return path of the caller.
 struct TempCapture {
     path: String,
@@ -351,13 +352,13 @@ impl TempCapture {
         let frame = desktop_api::vision::capture::capture(&target, Scope::Fullscreen)
             .await
             .map_err(|e| format!("screen capture failed: {}", e))?;
-        let bmp = encode_bmp(&frame)?;
+        let png = encode_png(&frame)?;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("nuphus_mcp_capture_{}.bmp", nanos));
-        std::fs::write(&path, &bmp).map_err(|e| format!("save temp capture failed: {}", e))?;
+        let path = std::env::temp_dir().join(format!("nuphus_mcp_capture_{}.png", nanos));
+        std::fs::write(&path, &png).map_err(|e| format!("save temp capture failed: {}", e))?;
         Ok(Self {
             path: path.to_string_lossy().into_owned(),
         })

@@ -28,7 +28,7 @@ key; local OCR is built in; vision works with your own vision LLM
 - **36 MCP tools** (15 desktop + 21 browser) — screenshots, window control,
   mouse/keyboard, Chrome CDP automation, and more — see [TOOLS.md](TOOLS.md) /
   [TOOLS.zh-CN.md](TOOLS.zh-CN.md) for the full reference.
-- **Desktop automation**: screen size, screenshot (BMP/base64), window list,
+- **Desktop automation**: screen size, screenshot (PNG/base64), window list,
   window activate/screenshot/move/resize/info, mouse click/drag/scroll/position,
   keyboard input/hotkey, clipboard write/clean — implemented on the
   `desktop-api` crate (xcap + Win32, no Tauri dependency).

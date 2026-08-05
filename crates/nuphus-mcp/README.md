@@ -14,7 +14,7 @@
 
 ## Features
 
-- **Desktop automation** (15 tools): screen size, screenshot (BMP/base64), window list/activate/screenshot/**move/resize/info**, mouse click/drag/scroll/position, keyboard input/hotkey, clipboard write/clean — implemented on the `desktop-api` crate (xcap + Win32, no Tauri dependency).
+- **Desktop automation** (15 tools): screen size, screenshot (PNG/base64), window list/activate/screenshot/**move/resize/info**, mouse click/drag/scroll/position, keyboard input/hotkey, clipboard write/clean — implemented on the `desktop-api` crate (xcap + Win32, no Tauri dependency).
 - **Computer vision** (2 tools): `desktop_vision` (BYOK — send a screenshot to your own vision model via OpenAI-compatible API) and `desktop_perceive` (local OCR + YOLO element location with PaddleOCR, models auto-downloaded on first run).
 - **Browser automation** (21 tools): navigate, snapshot (accessibility tree with `@N` refs), click, type, exec, scroll, extract, screenshot, evaluate, back/forward, wait_for, cookies get/set/import, upload, tabs, downloads — implemented on `nuphus-browser` (chromiumoxide CDP, shared with the Nuphus main app).
 - **Zero-cost stdio**: no HTTP server, no daemon. The process reads single-line JSON from stdin and writes responses to stdout.
@@ -179,10 +179,10 @@ cargo run -p nuphus-mcp --example demo
 | Tool | Description |
 |------|-------------|
 | `desktop_screen_size` | Screen resolution (width × height) |
-| `desktop_screenshot` | Fullscreen / region screenshot, save BMP or return base64 |
+| `desktop_screenshot` | Fullscreen / region screenshot, save PNG or return base64 |
 | `desktop_windows_list` | List visible OS windows (hwnd/title/position) |
 | `desktop_window_activate` | Bring a window to the foreground by hwnd |
-| `desktop_window_screenshot` | Capture a specific window as BMP |
+| `desktop_window_screenshot` | Capture a specific window as PNG |
 | `desktop_window_move` | Move a window to screen coordinates (SetWindowPos) |
 | `desktop_window_resize` | Resize a window (SetWindowPos, keeps position) |
 | `desktop_window_info` | Query window details (title/state/rects/process/class) |

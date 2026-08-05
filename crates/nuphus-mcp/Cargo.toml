@@ -31,8 +31,8 @@ desktop-api = { path = "../desktop-api" }
 # Browser automation (CDP)
 nuphus-browser = { path = "../nuphus-browser" }
 
-# Screenshot BMP encoding
-image = { version = "0.25", default-features = false, features = ["bmp"] }
+# Screenshot PNG encoding
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # base64 (inline screenshot return)
 base64 = "0.22"

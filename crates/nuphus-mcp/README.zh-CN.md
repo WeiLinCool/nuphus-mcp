@@ -14,7 +14,7 @@
 
 ## 特性
 
-- **桌面自动化（15 个工具）**：屏幕分辨率、截图（BMP/base64）、窗口列表、窗口激活、窗口截图、**窗口移动/缩放/信息查询**、鼠标点击/拖拽/滚轮/定位、键盘输入/快捷键、剪贴板写入/清空 —— 基于 `desktop-api` crate（xcap + Win32），不依赖 Tauri。
+- **桌面自动化（15 个工具）**：屏幕分辨率、截图（PNG/base64）、窗口列表、窗口激活、窗口截图、**窗口移动/缩放/信息查询**、鼠标点击/拖拽/滚轮/定位、键盘输入/快捷键、剪贴板写入/清空 —— 基于 `desktop-api` crate（xcap + Win32），不依赖 Tauri。
 - **计算机视觉（2 个工具）**：`desktop_vision`（BYOK —— 截图发送到你自己的视觉模型，OpenAI 兼容 API）与 `desktop_perceive`（本地 OCR + YOLO 元素定位，PaddleOCR，首次运行自动下载模型）。
 - **浏览器自动化（21 个工具）**：导航、快照（无障碍树 `@N` 引用）、点击、输入、批量脚本、滚动、正文提取、截图、JS 执行、前进/后退、等待、Cookie 读写/导入、文件上传、标签页、下载目录 —— 基于 `nuphus-browser`（chromiumoxide CDP，与 Nuphus 主程序共用）。
 - **零成本 stdio**：无 HTTP 服务、无常驻进程。进程从 stdin 读单行 JSON，向 stdout 写响应。
@@ -174,10 +174,10 @@ cargo run -p nuphus-mcp --example demo
 | 工具 | 说明 |
 |------|------|
 | `desktop_screen_size` | 屏幕分辨率（宽 × 高） |
-| `desktop_screenshot` | 全屏/区域截图，保存 BMP 或返回 base64 |
+| `desktop_screenshot` | 全屏/区域截图，保存 PNG 或返回 base64 |
 | `desktop_windows_list` | 列出可见窗口（hwnd/标题/位置） |
 | `desktop_window_activate` | 按 hwnd 激活窗口到前台 |
-| `desktop_window_screenshot` | 截取指定窗口为 BMP |
+| `desktop_window_screenshot` | 截取指定窗口为 PNG |
 | `desktop_window_move` | 移动窗口到屏幕坐标（SetWindowPos） |
 | `desktop_window_resize` | 缩放窗口（SetWindowPos，保持位置） |
 | `desktop_window_info` | 查询窗口详情（标题/状态/矩形/进程/类名） |

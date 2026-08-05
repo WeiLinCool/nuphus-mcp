@@ -168,24 +168,24 @@ set NUPHUS_MCP_VISION_MODEL=qwen-vl-max
 
 ### desktop_screenshot
 
-全屏截图（或 region 区域截图），保存为 BMP。未传 `path` 时以 base64 内联返回。
+全屏截图（或 region 区域截图），保存为 PNG（无损）。未传 `path` 时以 base64 内联返回。
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| `path` | string | 否 | - | 保存路径（自动补 `.bmp`）；不传则返回 base64 |
+| `path` | string | 否 | - | 保存路径（自动补 `.png`）；不传则返回 base64 |
 | `region` | object | 否 | - | 裁剪区域 `{x, y, width, height}`；不传则全屏 |
 
 **示例 — 内联 base64**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{}}}
 ```
-**返回** `{"format":"bmp","data":"<base64>","width":1920,"height":1080}`
+**返回** `{"format":"png","data":"<base64>","width":1920,"height":1080}`
 
 **示例 — 保存文件**
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/me/Desktop/shot.bmp"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/me/Desktop/shot.png"}}}
 ```
-**返回** `{"path":"C:/Users/me/Desktop/shot.bmp","size":123456,"width":1920,"height":1080}`
+**返回** `{"path":"C:/Users/me/Desktop/shot.png","format":"png","size":123456,"width":1920,"height":1080}`
 
 ---
 
@@ -223,20 +223,20 @@ set NUPHUS_MCP_VISION_MODEL=qwen-vl-max
 
 ### desktop_window_screenshot
 
-截取指定窗口保存为 BMP（通过 `hwnd` 或 `title` 定位，至少提供一个）。
+截取指定窗口保存为 PNG（通过 `hwnd` 或 `title` 定位，至少提供一个）。
 未传 `path` 时以 base64 返回。
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
 | `title` | string | 否* | - | 窗口标题子串 |
 | `hwnd` | integer | 否* | - | 来自 `desktop_windows_list` 的窗口句柄 |
-| `path` | string | 否 | - | 保存路径（始终 BMP）；不传则返回 base64 |
+| `path` | string | 否 | - | 保存路径（自动补 `.png`）；不传则返回 base64 |
 
 \* `title` / `hwnd` 至少提供一个。
 
 **示例**
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_window_screenshot","arguments":{"title":"记事本","path":"C:/Users/me/Desktop/notepad.bmp"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_window_screenshot","arguments":{"title":"记事本","path":"C:/Users/me/Desktop/notepad.png"}}}
 ```
 
 ---
@@ -307,7 +307,7 @@ set NUPHUS_MCP_VISION_MODEL=qwen-vl-max
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| `path` | string | 否 | - | 图片文件路径（BMP/PNG）；不传则先截全屏 |
+| `path` | string | 否 | - | 图片文件路径（PNG）；不传则先截全屏 |
 | `prompt` | string | 否 | - | 给视觉模型的可选指令 |
 
 **示例**
@@ -328,7 +328,7 @@ set NUPHUS_MCP_VISION_MODEL=qwen-vl-max
 
 | 参数 | 类型 | 必填 | 默认 | 说明 |
 |------|------|------|------|------|
-| `path` | string | 否 | - | 图片文件路径（BMP/PNG）；不传则先截全屏 |
+| `path` | string | 否 | - | 图片文件路径（PNG）；不传则先截全屏 |
 
 **示例**
 ```json
@@ -813,7 +813,7 @@ Cookie 数据源；裸装 `nuphus-mcp` 时可能不可用，会返回说明性�
 ← {"jsonrpc":"2.0","id":1,"result":{"tools":[ ... 36 个工具 ... ]}}
 
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{}}}
-← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"format\":\"bmp\",\"data\":\"...\",\"width\":1920,\"height\":1080}"}]}}
+← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"format\":\"png\",\"data\":\"...\",\"width\":1920,\"height\":1080}"}]}}
 
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://example.com"}}}
 ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Navigated to: https://example.com\n\n── Page state ──\n@1 [link] \"More information\"..."}]}}

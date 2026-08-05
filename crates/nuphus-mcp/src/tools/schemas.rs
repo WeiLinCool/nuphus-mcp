@@ -86,9 +86,9 @@ fn desktop_tools() -> Vec<ToolDef> {
         ),
         tool_def(
             "desktop_screenshot",
-            "Capture the full screen (or a region). Saves as BMP when a path is provided, otherwise returns base64-encoded image data.",
+            "Capture the full screen (or a region). Saves as PNG when a path is provided, otherwise returns base64-encoded PNG data.",
             json_props! {
-                "path" => obj!("type"="string","description"="Save path (auto-appends .bmp); omit to return base64"),
+                "path" => obj!("type"="string","description"="Save path (auto-appends .png); omit to return base64"),
                 "region" => obj!("type"="object","description"="Crop region {x,y,width,height}; omit for full screen")
             },
             &[],
@@ -109,11 +109,11 @@ fn desktop_tools() -> Vec<ToolDef> {
         ),
         tool_def(
             "desktop_window_screenshot",
-            "Capture a specified window and save as BMP (locate by hwnd or title; provide at least one).",
+            "Capture a specified window and save as PNG (locate by hwnd or title; provide at least one).",
             json_props! {
                 "title" => obj!("type"="string","description"="Window title substring to find"),
                 "hwnd" => obj!("type"="integer","description"="Window handle from desktop_windows_list"),
-                "path" => obj!("type"="string","description"="Save path (always BMP); omit to return base64")
+                "path" => obj!("type"="string","description"="Save path (auto-appends .png); omit to return base64")
             },
             &[],
         ),
@@ -149,7 +149,7 @@ fn desktop_tools() -> Vec<ToolDef> {
             "desktop_vision",
             "Understand a screenshot with a user-configured vision model (BYOK, OpenAI-compatible API). Analyzes UI layout, text content, and icon functions; pass a focused prompt (e.g. \"analyze UI layout\", \"identify all icon functions\") or omit it to extract all text. Requires NUPHUS_MCP_VISION_API_KEY and NUPHUS_MCP_VISION_MODEL env vars; returns a clear error when not configured. If path is omitted, captures the full screen first. ⚠️ Vision coordinates are imprecise — never click with them. Recommended flow: desktop_vision to understand the screen, then desktop_perceive to get exact element coordinates for clicking.",
             json_props! {
-                "path" => obj!("type"="string","description"="Image file path (BMP/PNG); omit to capture the full screen first"),
+                "path" => obj!("type"="string","description"="Image file path (PNG); omit to capture the full screen first"),
                 "prompt" => obj!("type"="string","description"="Optional instruction for the vision model; defaults to a generic describe-and-read-text prompt")
             },
             &[],
@@ -158,7 +158,7 @@ fn desktop_tools() -> Vec<ToolDef> {
             "desktop_perceive",
             "Locate UI elements in a screenshot with local OCR (PaddleOCR) + optional YOLO icon detection. Downloads OCR models automatically on first run (user data dir). Returns elements with rect{x,y,w,h} and center{x,y}; ALWAYS click using the center coordinate, never rect.x/y (top-left). If path is omitted, captures the full screen first. Recommended flow: desktop_vision first to understand UI semantics, then desktop_perceive to get precise coordinates for clicking. Note: local OCR text may be inaccurate — trust desktop_vision's reading over OCR text.",
             json_props! {
-                "path" => obj!("type"="string","description"="Image file path (BMP/PNG); omit to capture the full screen first")
+                "path" => obj!("type"="string","description"="Image file path (PNG); omit to capture the full screen first"),
             },
             &[],
         ),

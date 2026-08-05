@@ -183,25 +183,25 @@ Get the screen resolution (width × height).
 
 ### desktop_screenshot
 
-Fullscreen screenshot, or a region screenshot, saved as BMP. If `path` is
-omitted the BMP data is returned inline as base64.
+Fullscreen screenshot, or a region screenshot, saved as PNG (lossless). If
+`path` is omitted the PNG data is returned inline as base64.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `path` | string | no | - | Save path (auto-appends `.bmp`); omit to return base64 |
+| `path` | string | no | - | Save path (auto-appends `.png`); omit to return base64 |
 | `region` | object | no | - | Crop region `{x, y, width, height}`; omit for fullscreen |
 
 **Example — inline base64**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{}}}
 ```
-**Returns** `{"format":"bmp","data":"<base64>","width":1920,"height":1080}`
+**Returns** `{"format":"png","data":"<base64>","width":1920,"height":1080}`
 
 **Example — save to file**
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/me/Desktop/shot.bmp"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"C:/Users/me/Desktop/shot.png"}}}
 ```
-**Returns** `{"path":"C:/Users/me/Desktop/shot.bmp","size":123456,"width":1920,"height":1080}`
+**Returns** `{"path":"C:/Users/me/Desktop/shot.png","format":"png","size":123456,"width":1920,"height":1080}`
 
 ---
 
@@ -240,20 +240,20 @@ may target the wrong window or fail.
 
 ### desktop_window_screenshot
 
-Capture a specific window as BMP, located by `hwnd` or `title` (at least one
-must be provided). If `path` is omitted the BMP is returned as base64.
+Capture a specific window as PNG, located by `hwnd` or `title` (at least one
+must be provided). If `path` is omitted the PNG is returned as base64.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `title` | string | no* | - | Window title substring to find |
 | `hwnd` | integer | no* | - | Window handle from `desktop_windows_list` |
-| `path` | string | no | - | Save path (always BMP); omit to return base64 |
+| `path` | string | no | - | Save path (auto-appends `.png`); omit to return base64 |
 
 \* At least one of `title` / `hwnd` is required.
 
 **Example**
 ```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_window_screenshot","arguments":{"title":"Notepad","path":"C:/Users/me/Desktop/notepad.bmp"}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"desktop_window_screenshot","arguments":{"title":"Notepad","path":"C:/Users/me/Desktop/notepad.png"}}}
 ```
 
 ---
@@ -327,7 +327,7 @@ screen is captured first.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `path` | string | no | - | Image file path (BMP/PNG); omit to capture the full screen first |
+| `path` | string | no | - | Image file path (PNG); omit to capture the full screen first |
 | `prompt` | string | no | - | Optional instruction for the vision model |
 
 **Example**
@@ -350,7 +350,7 @@ input/icon), `text`, `rect`, `center`, `confidence` and `source`
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `path` | string | no | - | Image file path (BMP/PNG); omit to capture the full screen first |
+| `path` | string | no | - | Image file path (PNG); omit to capture the full screen first |
 
 **Example**
 ```json
@@ -851,7 +851,7 @@ open a page → fill and submit a form.
 ← {"jsonrpc":"2.0","id":1,"result":{"tools":[ ... 36 tools ... ]}}
 
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{}}}
-← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"format\":\"bmp\",\"data\":\"...\",\"width\":1920,\"height\":1080}"}]}}
+← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"format\":\"png\",\"data\":\"...\",\"width\":1920,\"height\":1080}"}]}}
 
 → {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://example.com"}}}
 ← {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"Navigated to: https://example.com\n\n── Page state ──\n@1 [link] \"More information\"..."}]}}
