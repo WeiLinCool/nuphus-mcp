@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-08-04
+
+### Fixed
+
+- **Internal mechanism audit remediation** — full audit of server core, CDP
+  client, desktop automation and release pipeline; all P1/P2 findings fixed:
+- **Server**: tool execution is now isolated via `tokio::spawn` — a panicking
+  tool returns `isError` instead of killing the whole server process;
+  initialize no longer echoes the client's protocol version; JSON-RPC
+  validation (-32600/-32700/-32602, explicit `id:null`); `shutdown`/`exit`
+  implemented; `desktop_*` dispatch/schema drift guard.
+- **Automation lock**: token-based ownership, atomic publish (tmp+hard_link),
+  heartbeat renewal (long-running tools no longer outlive the 90s TTL and
+  break cross-process mutual exclusion), rename-before-delete (TOCTOU fix).
+- **Browser**: structured `BrowserError::Connection` classification — page JS
+  exceptions can no longer trigger a reconnect that kills a healthy browser;
+  timeout path now checks the child process is actually dead before
+  reconnect-kill; retries limited to read-only tools (write tools report
+  "may have been executed" instead of silently re-executing); download
+  directory re-configured after reconnect; JS interpolation uniformly
+  escaped; `batch_exec` reports honest `unknown` status; snapshot refs
+  invalidated on page/target changes; navigation URL host filter blocks
+  link-local/private ranges (`NUPHUS_MCP_ALLOW_PRIVATE_NAV=1` escape hatch).
+- **Desktop**: clipboard read no longer dereferences an unlocked HGLOBAL
+  with an unbounded scan (UB fix); foreground activation is verified before
+  input injection; ONNX sessions are process-level singletons (no more
+  80MB model reload per perceive call); temp capture files are cleaned up;
+  model downloads use per-PID partial files and an ORT load check;
+  middle-click support; ort dylib path guard against stale System32 DLL.
+- **Release pipeline**: Cargo.toml version aligned with npm (0.1.0 → real
+  version — published binaries reported the wrong `serverInfo.version`);
+  `verify-release-versions.js` preflight gate (tag ↔ npm ↔ Cargo.toml must
+  match); E409 publish handling now verifies via `npm view` instead of
+  blanket success; CI covers all three crates plus real-Chrome integration
+  tests and advisory `cargo audit`; npm CLI validates platform-package
+  version; local publish guard against stale binaries.
+
 ## [0.1.6] - 2026-08-04
 
 ### Fixed
@@ -126,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs**: `TOOLS.md` / `TOOLS.zh-CN.md` (36-tool reference), demo example
   (`examples/demo.rs`).
 
-[0.1.6]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.6
+[0.1.7]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.7`n[0.1.6]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.6
 [0.1.5]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.5
 [0.1.4]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.4
 [0.1.3]: https://github.com/nuphus/nuphus-mcp/releases/tag/v0.1.3
