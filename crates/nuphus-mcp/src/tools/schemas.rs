@@ -246,10 +246,11 @@ fn browser_tools() -> Vec<ToolDef> {
         ),
         tool_def(
             "browser_click",
-            "Click element by CSS selector or ref ID from snapshot (e.g. @1, @e0, 'button'). CSS selector path auto-waits for the element to appear and become visible (up to 5s) before clicking.",
+            "Click element by CSS selector or ref ID from snapshot (e.g. @1, @e0, 'button'). CSS selector path auto-waits for the element to appear and become visible (up to 5s) before clicking. Default clicks are JS-synthesized (reliable, ignore overlays) but do NOT produce user activation; pass trusted=true to dispatch real CDP mouse events (isTrusted=true) instead — required to unlock autoplay-gated audio/video playback and other gesture-gated features.",
             json_props! {
                 "selector" => obj!("type"="string","description"="CSS selector or ref ID (e.g. @1, @e0, 'button')"),
-                "ref" => obj!("type"="string","description"="Ref ID from snapshot (e.g. @1, @e0); alias of selector — provide either one")
+                "ref" => obj!("type"="string","description"="Ref ID from snapshot (e.g. @1, @e0); alias of selector — provide either one"),
+                "trusted" => obj!("type"="boolean","description"="Dispatch real trusted CDP mouse events at the element's center (produces user activation). Use for autoplay-gated media playback and gesture-gated features. Default false (JS click).")
             },
             &["selector"],
         ),

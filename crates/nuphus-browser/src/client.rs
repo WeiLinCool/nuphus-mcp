@@ -1188,6 +1188,186 @@ impl BrowserClient {
         Ok(format!("Clicked element: {}", selector))
     }
 
+    /// Trusted click: dispatches real CDP mouse events (mouseMoved → mousePressed →
+    /// mouseReleased) at the element's center coordinates. Unlike `el.click()`
+    /// (JS-synthesized, untrusted), these events are trusted (isTrusted=true) and
+    /// produce user activation — required to unlock autoplay-gated audio/video
+    /// playback and other gesture-gated browser features.
+    ///
+    /// Trade-off: coordinate-based dispatch hits whatever is topmost at the point,
+    /// so an element covered by an overlay will NOT receive the click. The default
+    /// `click` (JS path) ignores overlays; use trusted only when activation is needed.
+    pub async fn click_trusted(&self, selector: &str) -> Result<String, BrowserError> {
+        use chromiumoxide::cdp::browser_protocol::input::{
+            DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+        };
+
+        let page = self.get_page().await?;
+        let page_guard = page.lock().await;
+
+        let (x, y) = self.element_center(&page_guard, selector).await?;
+
+        page_guard
+            .execute(DispatchMouseEventParams::new(
+                DispatchMouseEventType::MouseMoved,
+                x,
+                y,
+            ))
+            .await
+            .map_err(|e| cdp_err_ctx("trusted click: mouseMoved failed", e))?;
+
+        let cmd = DispatchMouseEventParams::builder()
+            .x(x)
+            .y(y)
+            .button(MouseButton::Left)
+            .click_count(1);
+        page_guard
+            .execute(
+                cmd.clone()
+                    .r#type(DispatchMouseEventType::MousePressed)
+                    .build()
+                    .map_err(|e| BrowserError::Execution(format!("mousePressed build: {e}")))?,
+            )
+            .await
+            .map_err(|e| cdp_err_ctx("trusted click: mousePressed failed", e))?;
+        page_guard
+            .execute(
+                cmd.r#type(DispatchMouseEventType::MouseReleased)
+                    .build()
+                    .map_err(|e| BrowserError::Execution(format!("mouseReleased build: {e}")))?,
+            )
+            .await
+            .map_err(|e| cdp_err_ctx("trusted click: mouseReleased failed", e))?;
+
+        Ok(format!("Clicked (trusted): {}", selector))
+    }
+
+    /// Resolve an element's center point in viewport CSS pixels, scrolling it into
+    /// view first. Supports the same three selector forms as `click` (@N / @eN / CSS).
+    async fn element_center(
+        &self,
+        page: &Page,
+        selector: &str,
+    ) -> Result<(f64, f64), BrowserError> {
+        // Shared JS fragment: after scrolling, return "centerX,centerY" of the box.
+        const CENTER_EXPR: &str =
+            "const r = el.getBoundingClientRect(); return Math.round(r.left + r.width/2) + ',' + Math.round(r.top + r.height/2);";
+
+        let coords: String = if let Some(rest) = selector.strip_prefix('@') {
+            if let Ok(idx) = rest.parse::<usize>() {
+                // @N AX ref path — resolve backendNodeId, then callFunctionOn for the rect
+                if idx < 1 || idx > self.snapshot_backend_ids.len() {
+                    return Err(BrowserError::ElementNotFound(
+                        selector.to_string(),
+                        format!(
+                            "@{} out of range (max @{})",
+                            idx,
+                            self.snapshot_backend_ids.len()
+                        ),
+                    ));
+                }
+                let backend_id = self.snapshot_backend_ids[idx - 1];
+                let object_id = self.resolve_backend_node(page, backend_id).await?;
+                let cmd = RuntimeCallFunctionOn {
+                    function_declaration: format!(
+                        "function(){{ const el = this; el.scrollIntoViewIfNeeded(); {} }}",
+                        CENTER_EXPR
+                    ),
+                    object_id: Some(object_id.inner().clone()),
+                    return_by_value: Some(true),
+                    await_promise: Some(true),
+                };
+                let resp = page
+                    .execute(cmd)
+                    .await
+                    .map_err(|e| cdp_err_ctx("element_center: callFunctionOn failed", e))?;
+                if let Some(details) = resp.result.get("exceptionDetails") {
+                    let desc = details
+                        .get("exception")
+                        .and_then(|e| e.get("description"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown exception");
+                    return Err(BrowserError::Execution(format!(
+                        "element_center JS exception on {}: {}",
+                        selector, desc
+                    )));
+                }
+                resp.result
+                    .pointer("/result/value")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        BrowserError::Execution(format!(
+                            "element_center: no coordinates returned for {}",
+                            selector
+                        ))
+                    })?
+                    .to_string()
+            } else if let Some(idx_str) = rest.strip_prefix('e') {
+                // Legacy @eN ref path (rest = "e5" after stripping '@')
+                let idx: usize = idx_str.parse().map_err(|_| {
+                    BrowserError::ElementNotFound(
+                        selector.to_string(),
+                        "@e ref index must be a non-negative integer".to_string(),
+                    )
+                })?;
+                let js = format!(
+                    r#"(function() {{
+                        const els = document.querySelectorAll('a, button, input, textarea, select, [onclick]');
+                        const el = els[{idx}];
+                        if (!el) throw new Error('Element @e{idx} not found on page');
+                        el.scrollIntoViewIfNeeded();
+                        {CENTER_EXPR}
+                    }})()"#,
+                    idx = idx,
+                    CENTER_EXPR = CENTER_EXPR
+                );
+                let result = page
+                    .evaluate(js)
+                    .await
+                    .map_err(|e| cdp_err_ctx("element_center: evaluate failed", e))?;
+                result.into_value().map_err(|_| {
+                    BrowserError::Execution(format!(
+                        "element_center: unexpected return type for {}",
+                        selector
+                    ))
+                })?
+            } else {
+                return Err(BrowserError::ElementNotFound(
+                    selector.to_string(),
+                    "unrecognized ref format (expected @N or @eN)".to_string(),
+                ));
+            }
+        } else {
+            // CSS selector path — reuse the auto-wait loop (presence + visible),
+            // then return the center instead of clicking.
+            let js = Self::actionability_script(selector, CENTER_EXPR);
+            let result = page
+                .evaluate(js)
+                .await
+                .map_err(|e| cdp_err_ctx("element_center: evaluate failed", e))?;
+            result.into_value().map_err(|_| {
+                BrowserError::Execution(format!(
+                    "element_center: unexpected return type for {}",
+                    selector
+                ))
+            })?
+        };
+
+        let (xs, ys) = coords.split_once(',').ok_or_else(|| {
+            BrowserError::Execution(format!(
+                "element_center: malformed coordinates '{}' for {}",
+                coords, selector
+            ))
+        })?;
+        let x = xs.trim().parse::<f64>().map_err(|_| {
+            BrowserError::Execution(format!("element_center: bad x in '{}'", coords))
+        })?;
+        let y = ys.trim().parse::<f64>().map_err(|_| {
+            BrowserError::Execution(format!("element_center: bad y in '{}'", coords))
+        })?;
+        Ok((x, y))
+    }
+
     /// Type text into element (via @N ref from AX snapshot, @eN legacy ref, or CSS selector)
     pub async fn type_text(&self, selector: &str, text: &str) -> Result<String, BrowserError> {
         let page = self.get_page().await?;

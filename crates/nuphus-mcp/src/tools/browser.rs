@@ -290,7 +290,15 @@ async fn run_op(
                 .and_then(Value::as_str)
                 .or_else(|| args.get("ref").and_then(Value::as_str))
                 .unwrap_or("");
-            let result = client.click(selector).await?;
+            let trusted = args
+                .get("trusted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let result = if trusted {
+                client.click_trusted(selector).await?
+            } else {
+                client.click(selector).await?
+            };
             match client.snapshot(false, None).await {
                 Ok(snap) => format!("{}\n\n── Page state ──\n{}", result, snap),
                 Err(_) => result,
