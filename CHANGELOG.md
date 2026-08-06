@@ -5,10 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8] - 2026-08-06
 
 ### Added
 
+- **External browser self-healing** — attach to a fingerprint browser now
+  survives window reopens: set `NUPHUS_BROWSER_EXE_PATH` (plus optional
+  `NUPHUS_BROWSER_NAME` / `NUPHUS_BROWSER_USER_DATA_DIR`) alongside
+  `NUPHUS_MCP_BROWSER_CDP_URL`, and when the configured endpoint stops
+  answering the server locates the window process by exe path, re-resolves
+  its live debug port (literal cmdline port, or `DevToolsActivePort` for
+  random-port launches), verifies it with a `no_proxy` CDP probe and retries
+  once. Attach failures remain hard errors with actionable, user-facing
+  guidance — still no silent fallback into a managed Chrome.
 - **Trusted click mode** — `browser_click` gains an optional `trusted`
   parameter (default `false`). When `true`, the click is dispatched as real
   CDP `Input.dispatchMouseEvent` events (`isTrusted=true`, produces user
@@ -180,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs**: `TOOLS.md` / `TOOLS.zh-CN.md` (36-tool reference), demo example
   (`examples/demo.rs`).
 
+[0.1.8]: https://github.com/mrpulor-gh/nuphus-mcp/releases/tag/v0.1.8
 [0.1.7]: https://github.com/mrpulor-gh/nuphus-mcp/releases/tag/v0.1.7
 [0.1.6]: https://github.com/mrpulor-gh/nuphus-mcp/releases/tag/v0.1.6
 [0.1.5]: https://github.com/mrpulor-gh/nuphus-mcp/releases/tag/v0.1.5

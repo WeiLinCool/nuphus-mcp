@@ -243,6 +243,26 @@ fn detect_screen_size() -> (u32, u32) {
     }
 }
 
+/// Identity of the user-picked external (fingerprint) browser, mirrored from
+/// the persisted preference via env (`NUPHUS_BROWSER_NAME` /
+/// `NUPHUS_BROWSER_EXE_PATH` / `NUPHUS_BROWSER_USER_DATA_DIR`).
+///
+/// Fingerprint browsers typically launch with `--remote-debugging-port=0`, so
+/// a reopened window listens on a NEW random port and the persisted CDP URL
+/// goes stale. With this identity, `attach_external` can locate the running
+/// process by exe path, re-resolve its actual debug port, and heal the
+/// connection without any user action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalIdentity {
+    /// Human-readable platform name (e.g. "AdsPower") for error display.
+    pub name: String,
+    /// Browser executable path — locates the running window process.
+    pub exe_path: String,
+    /// `--user-data-dir` fallback for DevToolsActivePort resolution when the
+    /// process cmdline can't be read.
+    pub user_data_dir: Option<String>,
+}
+
 /// Browser client
 pub struct BrowserClient {
     /// Chrome executable path
@@ -277,6 +297,9 @@ pub struct BrowserClient {
     /// `NUPHUS_MCP_BROWSER_CDP_URL` environment variable. When set, `launch()`
     /// attaches to this endpoint instead of launching/attaching our own Chrome.
     external_cdp_url: Option<String>,
+    /// Identity of the external browser (see [`ExternalIdentity`]); enables
+    /// `attach_external` self-healing when the endpoint's port changed.
+    external_identity: Option<ExternalIdentity>,
 }
 
 /// Interactive ARIA roles to include in the snapshot output.
@@ -477,6 +500,175 @@ fn extract_subtree_children(
     None
 }
 
+/// Result of re-resolving the external browser's CDP endpoint from its
+/// persisted identity (self-healing after the window was reopened on a new port).
+#[derive(Debug)]
+enum ExternalHeal {
+    /// A live CDP endpoint was found and verified (base URL `http://127.0.0.1:{port}`).
+    Resolved(String),
+    /// No running process matches the identity's exe path — the window is closed.
+    ProcessNotFound,
+    /// Process found, but no candidate exposes a responsive CDP endpoint.
+    PortUnresponsive,
+}
+
+/// Extract the debug port and profile dir from a process command line.
+/// Handles both `--flag=value` and `--flag value` forms. Port may be 0
+/// (= random port chosen by the browser — the actual port is written to
+/// DevToolsActivePort in the profile dir; resolve via [`resolve_debug_port`]).
+///
+/// Mirrors the detect-side parser in src-tauri's `commands/config/preferences.rs`
+/// (`parse_cmdline`) — keep semantics in sync (cross-crate; sharing would pull
+/// process-scanning into the detect path's iteration model).
+fn parse_debug_cmdline(cmd: &[std::ffi::OsString]) -> (Option<u16>, Option<PathBuf>) {
+    let args: Vec<String> = cmd
+        .iter()
+        .map(|a| a.to_string_lossy().trim_matches('"').to_string())
+        .collect();
+    let mut port = None;
+    let mut profile = None;
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(v) = arg.strip_prefix("--remote-debugging-port=") {
+            port = v.parse::<u16>().ok();
+        } else if arg == "--remote-debugging-port" {
+            port = args.get(i + 1).and_then(|v| v.parse::<u16>().ok());
+        } else if let Some(v) = arg.strip_prefix("--user-data-dir=") {
+            profile = Some(PathBuf::from(v));
+        }
+    }
+    (port, profile)
+}
+
+/// Resolve the effective debug port. A literal port is returned as-is; port 0
+/// means the browser picked a random port and wrote it to
+/// `<user-data-dir>/DevToolsActivePort` (first line) — how AdsPower launches
+/// its SunBrowser. Mirrors src-tauri's `resolve_debug_port`; keep in sync.
+fn resolve_debug_port(port: u16, profile: Option<&std::path::Path>) -> Option<u16> {
+    if port > 0 {
+        return Some(port);
+    }
+    let content = std::fs::read_to_string(profile?.join("DevToolsActivePort")).ok()?;
+    content
+        .lines()
+        .next()?
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
+}
+
+/// Whether two executable paths refer to the same file. Case-insensitive on
+/// Windows (the persisted path and the running process path may differ in case).
+fn same_exe(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if cfg!(windows) {
+        a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+    } else {
+        a == b
+    }
+}
+
+/// Running processes whose exe matches `exe_path`, as (debug-port flag from
+/// cmdline, --user-data-dir) pairs.
+fn find_identity_processes(exe_path: &str) -> Vec<(Option<u16>, Option<PathBuf>)> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::everything(),
+    );
+    let target = std::path::Path::new(exe_path);
+    sys.processes()
+        .values()
+        .filter(|p| p.exe().is_some_and(|e| same_exe(e, target)))
+        .map(|p| parse_debug_cmdline(p.cmd()))
+        .collect()
+}
+
+/// GET `{base}/json/version` (no_proxy, short timeout); returns the browser
+/// version string only when the endpoint actually speaks CDP.
+async fn probe_cdp_version(base: &str) -> Option<String> {
+    let http = reqwest::Client::builder().no_proxy().build().ok()?;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        http.get(format!("{base}/json/version")).send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body.get("webSocketDebuggerUrl").and_then(|v| v.as_str())?;
+    Some(
+        body.get("Browser")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+    )
+}
+
+/// Self-healing core: given the persisted identity, locate the running window
+/// process, re-resolve its actual debug port (literal cmdline port, or port 0
+/// → DevToolsActivePort in the process's --user-data-dir, falling back to the
+/// stored user_data_dir), and verify candidates with a no_proxy CDP probe.
+async fn heal_external_endpoint(identity: &ExternalIdentity) -> ExternalHeal {
+    let candidates = find_identity_processes(&identity.exe_path);
+    if candidates.is_empty() {
+        return ExternalHeal::ProcessNotFound;
+    }
+
+    let mut ports: Vec<u16> = Vec::new();
+    for (port_flag, profile) in &candidates {
+        let fallback = identity.user_data_dir.as_deref().map(std::path::Path::new);
+        let profile = profile.as_deref().or(fallback);
+        if let Some(p) = port_flag.and_then(|p| resolve_debug_port(p, profile)) {
+            if !ports.contains(&p) {
+                ports.push(p);
+            }
+        }
+    }
+
+    for port in ports {
+        let base = format!("http://127.0.0.1:{port}");
+        if probe_cdp_version(&base).await.is_some() {
+            return ExternalHeal::Resolved(base);
+        }
+    }
+    ExternalHeal::PortUnresponsive
+}
+
+/// Compose the agent-facing message for a failed external attach. Actionable
+/// and anti-misoperation: names the browser, tells the user exactly what to do
+/// (reopen the window — the connection then auto-heals), and explicitly forbids
+/// switching browsers / changing config / blind retries. Developer detail
+/// (`--remote-debugging-port`, raw transport errors) stays in tracing logs.
+fn attach_failure_message(
+    base: &str,
+    identity: Option<&ExternalIdentity>,
+    heal: Option<&ExternalHeal>,
+) -> String {
+    match (identity, heal) {
+        (Some(id), Some(ExternalHeal::ProcessNotFound)) => format!(
+            "指纹浏览器「{}」当前没有运行中的窗口。请让用户在指纹浏览器平台中打开该窗口——\
+             窗口打开后连接会自动恢复。不要切换浏览器、不要修改配置、不要盲目重试。",
+            id.name
+        ),
+        (Some(id), _) => format!(
+            "指纹浏览器「{}」的窗口进程正在运行，但调试端口无响应。请让用户在指纹浏览器平台中\
+             关闭并重新打开该窗口（确认调试端口已开启）——窗口重开后连接会自动恢复。\
+             不要切换浏览器、不要修改配置。",
+            id.name
+        ),
+        (None, _) => format!(
+            "无法连接已配置的外部浏览器（{base}）。该配置缺少浏览器身份信息，无法自动恢复。\
+             请让用户到 Nuphus 设置页的「浏览器执行环境」中重新检测并选择目标浏览器窗口——\
+             重新选择后连接即可恢复。不要切换到内置浏览器、不要盲目重试。"
+        ),
+    }
+}
+
 impl BrowserClient {
     /// Read the external CDP endpoint from the environment (shared by both constructors).
     fn external_cdp_url_from_env() -> Option<String> {
@@ -484,6 +676,24 @@ impl BrowserClient {
             .ok()
             .map(|s| s.trim().trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// Read the external browser identity from the environment (mirrors the
+    /// persisted preference; exe path is the identity key — without it there
+    /// is no way to locate the window process, so no identity).
+    fn external_identity_from_env() -> Option<ExternalIdentity> {
+        fn non_empty(key: &str) -> Option<String> {
+            std::env::var(key)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        }
+        let exe_path = non_empty("NUPHUS_BROWSER_EXE_PATH")?;
+        Some(ExternalIdentity {
+            name: non_empty("NUPHUS_BROWSER_NAME").unwrap_or_else(|| "指纹浏览器".to_string()),
+            exe_path,
+            user_data_dir: non_empty("NUPHUS_BROWSER_USER_DATA_DIR"),
+        })
     }
 
     /// Create new BrowserClient (does not launch browser)
@@ -505,6 +715,7 @@ impl BrowserClient {
             child_process: None,
             launched_headless: None,
             external_cdp_url: Self::external_cdp_url_from_env(),
+            external_identity: Self::external_identity_from_env(),
         })
     }
 
@@ -526,6 +737,7 @@ impl BrowserClient {
             child_process: None,
             launched_headless: None,
             external_cdp_url: Self::external_cdp_url_from_env(),
+            external_identity: Self::external_identity_from_env(),
         })
     }
 
@@ -823,6 +1035,60 @@ impl BrowserClient {
             return Ok(());
         }
 
+        // First try the configured endpoint. Developer-facing detail goes to
+        // logs; the error surfaced to the agent is composed at the end
+        // (actionable guidance, anti-misoperation).
+        if let Err(first_err) = self.try_attach_external(&base).await {
+            tracing::warn!("[Browser] external attach to {base} failed: {first_err}");
+
+            let identity = match &self.external_identity {
+                Some(id) => id.clone(),
+                // Legacy config (URL only, no identity): no self-heal possible —
+                // guide the user to re-pick the window in the settings page.
+                None => {
+                    return Err(BrowserError::Launch(attach_failure_message(&base, None, None)));
+                }
+            };
+
+            // Self-heal: the window may have been reopened on a new (random)
+            // debug port — locate the process by exe path, re-resolve the port
+            // and retry once. NEVER falls back to a managed Chrome.
+            match heal_external_endpoint(&identity).await {
+                ExternalHeal::Resolved(new_base) => {
+                    if new_base != base {
+                        tracing::info!(
+                            "[Browser] external endpoint self-healed: {base} -> {new_base}"
+                        );
+                        self.external_cdp_url = Some(new_base.clone());
+                    }
+                    match self.try_attach_external(&new_base).await {
+                        Ok(()) => Ok(()),
+                        Err(e) => {
+                            tracing::warn!(
+                                "[Browser] attach to healed endpoint {new_base} failed: {e}"
+                            );
+                            Err(BrowserError::Launch(attach_failure_message(
+                                &base,
+                                Some(&identity),
+                                Some(&ExternalHeal::PortUnresponsive),
+                            )))
+                        }
+                    }
+                }
+                outcome => Err(BrowserError::Launch(attach_failure_message(
+                    &base,
+                    Some(&identity),
+                    Some(&outcome),
+                ))),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    /// One attach attempt against `base`: discover the browser-level ws URL via
+    /// `GET {base}/json/version`, then connect like `try_attach` does.
+    async fn try_attach_external(&mut self, base: &str) -> Result<(), BrowserError> {
         // Discover the browser-level ws URL via the CDP HTTP endpoint.
         // no_proxy: a CDP endpoint is an infrastructure address (loopback or an
         // explicit host) and must never be routed through the system proxy — a
@@ -2544,18 +2810,30 @@ impl BrowserClient {
     /// new configuration; `None` (or empty) returns to managed-Chrome behavior.
     /// `close` semantics apply: an external attach is only disconnected (never
     /// kills the user's browser), a managed Chrome is shut down.
-    pub async fn set_external_cdp_url(&mut self, url: Option<String>) -> Result<(), BrowserError> {
+    pub async fn set_external_cdp_url(
+        &mut self,
+        url: Option<String>,
+        identity: Option<ExternalIdentity>,
+    ) -> Result<(), BrowserError> {
         let normalized = url
             .map(|s| s.trim().trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty());
-        if self.external_cdp_url == normalized {
+        if self.external_cdp_url == normalized && self.external_identity == identity {
             return Ok(());
         }
         if self.browser.is_some() {
             self.close().await?;
         }
         self.external_cdp_url = normalized;
+        self.external_identity = identity;
         Ok(())
+    }
+
+    /// The current external CDP endpoint (`None` = managed-Chrome mode). May
+    /// differ from the configured value after `attach_external` self-healing —
+    /// callers should reconcile env/preferences with it after a successful op.
+    pub fn external_cdp_url(&self) -> Option<&str> {
+        self.external_cdp_url.as_deref()
     }
 
     /// Whether the Chromium child process launched by this client is still running:
@@ -3013,6 +3291,124 @@ mod tests {
         // A selector containing quotes must not be able to break out of the JS string.
         let lit = js_string_literal("';alert(1);//");
         assert!(!lit.contains("''"), "no raw quote breakout: {lit}");
+    }
+
+    // ── External (fingerprint) browser self-healing ──
+
+    fn cmdline(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    fn test_identity() -> ExternalIdentity {
+        ExternalIdentity {
+            name: "AdsPower".to_string(),
+            exe_path: r"C:\Users\x\AppData\Roaming\adspower_global\sunbrowser.exe".to_string(),
+            user_data_dir: None,
+        }
+    }
+
+    #[test]
+    fn parse_cmdline_literal_port_and_profile() {
+        let (port, profile) = parse_debug_cmdline(&cmdline(&[
+            "sunbrowser.exe",
+            "--remote-debugging-port=9222",
+            "--user-data-dir=C:\\tmp\\prof",
+        ]));
+        assert_eq!(port, Some(9222));
+        assert_eq!(profile, Some(PathBuf::from("C:\\tmp\\prof")));
+    }
+
+    #[test]
+    fn parse_cmdline_space_separated_and_quoted() {
+        let (port, _) = parse_debug_cmdline(&cmdline(&[
+            "sunbrowser.exe",
+            "--remote-debugging-port",
+            "9333",
+        ]));
+        assert_eq!(port, Some(9333));
+        let (_, profile) = parse_debug_cmdline(&cmdline(&[
+            "sunbrowser.exe",
+            "\"--user-data-dir=C:\\.ADSPOWER_GLOBAL\\cache\\k1ffh0or\"",
+        ]));
+        assert_eq!(
+            profile,
+            Some(PathBuf::from("C:\\.ADSPOWER_GLOBAL\\cache\\k1ffh0or"))
+        );
+    }
+
+    #[test]
+    fn resolve_random_port_via_devtools_active_port() {
+        // AdsPower SunBrowser launches with --remote-debugging-port=0; the real
+        // port lands in <user-data-dir>/DevToolsActivePort (first line).
+        let dir = std::env::temp_dir().join(format!("nuphus-heal-dap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("DevToolsActivePort"), "54738\n/devtools/browser/abc\n").unwrap();
+        assert_eq!(resolve_debug_port(0, Some(&dir)), Some(54738));
+        // Literal port is returned as-is; random port without profile is unresolvable.
+        assert_eq!(resolve_debug_port(9222, None), Some(9222));
+        assert_eq!(resolve_debug_port(0, None), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failure_message_process_not_found_is_actionable() {
+        // Window closed: name the browser, tell the user to reopen the window,
+        // and explicitly forbid switching browsers / changing config / blind retries.
+        let msg = attach_failure_message(
+            "http://127.0.0.1:9222",
+            Some(&test_identity()),
+            Some(&ExternalHeal::ProcessNotFound),
+        );
+        assert!(msg.contains("AdsPower"), "names the browser: {msg}");
+        assert!(msg.contains("没有运行中的窗口"), "states the window is closed: {msg}");
+        assert!(msg.contains("连接会自动恢复"), "promises auto-recovery: {msg}");
+        assert!(msg.contains("不要切换浏览器"), "forbids switching: {msg}");
+        assert!(msg.contains("不要修改配置"), "forbids config changes: {msg}");
+        assert!(msg.contains("不要盲目重试"), "forbids blind retries: {msg}");
+        assert!(
+            !msg.contains("--remote-debugging-port"),
+            "developer detail stays out of the message: {msg}"
+        );
+    }
+
+    #[test]
+    fn failure_message_port_unresponsive_guides_reopen() {
+        let msg = attach_failure_message(
+            "http://127.0.0.1:9222",
+            Some(&test_identity()),
+            Some(&ExternalHeal::PortUnresponsive),
+        );
+        assert!(msg.contains("AdsPower"), "names the browser: {msg}");
+        assert!(msg.contains("调试端口无响应"), "states the cause: {msg}");
+        assert!(msg.contains("重新打开"), "guides reopening the window: {msg}");
+        assert!(msg.contains("不要切换浏览器"), "forbids switching: {msg}");
+    }
+
+    #[test]
+    fn failure_message_without_identity_guides_to_settings() {
+        // Legacy config (URL only): no self-heal possible — guide the user to
+        // re-pick the window in the settings page; never suggest managed Chrome.
+        let msg = attach_failure_message("http://127.0.0.1:9222", None, None);
+        assert!(msg.contains("http://127.0.0.1:9222"), "shows the endpoint: {msg}");
+        assert!(msg.contains("设置页"), "guides to the settings page: {msg}");
+        assert!(msg.contains("重新检测并选择"), "guides re-picking the window: {msg}");
+        assert!(msg.contains("不要切换到内置浏览器"), "forbids managed fallback: {msg}");
+        assert!(
+            !msg.contains("--remote-debugging-port"),
+            "developer detail stays out of the message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn heal_without_running_process_reports_not_found() {
+        // An exe path no process can match (also covers find_identity_processes
+        // not panicking on a live process scan).
+        let mut id = test_identity();
+        id.exe_path = r"Z:\definitely\not\existing\nuphus-no-such-browser.exe".to_string();
+        assert!(matches!(
+            heal_external_endpoint(&id).await,
+            ExternalHeal::ProcessNotFound
+        ));
     }
 
     // ── Integration tests (real Chrome, #[ignore]) ──

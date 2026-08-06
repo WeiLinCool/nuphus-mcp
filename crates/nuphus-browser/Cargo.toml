@@ -40,6 +40,11 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # MIME detection (file upload)
 mime_guess = "2"
 
+# Process scan for external (fingerprint) browser self-healing — locating the
+# window process by exe path and reading its --remote-debugging-port cmdline.
+# Same version as src-tauri (workspace-wide 0.32).
+sysinfo = "0.32"
+
 # Download directory file times
 chrono = "0.4"
 

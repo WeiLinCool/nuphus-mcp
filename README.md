@@ -116,6 +116,37 @@ Chrome; attach failures are hard errors (no silent fallback into the wrong
 browser). The external browser belongs to you — the server never kills it on
 exit.
 
+#### Self-healing on window reopen (recommended)
+
+Fingerprint browsers typically get a **new random debug port every time a
+window is reopened**, which would leave a fixed `..._CDP_URL` pointing at a
+dead port. Provide the browser identity and the server re-resolves the live
+port automatically on the next tool call:
+
+| Environment variable | Required | Default | Description |
+|----------------------|----------|---------|-------------|
+| `NUPHUS_BROWSER_EXE_PATH` | for self-healing | — | Absolute path to the browser exe — the identity key used to locate the running window process |
+| `NUPHUS_BROWSER_NAME` | — | `指纹浏览器` | Display name used in error guidance |
+| `NUPHUS_BROWSER_USER_DATA_DIR` | — | — | Profile dir, used to read `DevToolsActivePort` when the window was started with a random port (`--remote-debugging-port=0`) and the process cmdline does not reveal it |
+
+```jsonc
+// MCP client config — attach + self-heal
+"env": {
+  "NUPHUS_MCP_BROWSER_CDP_URL": "http://127.0.0.1:9222",
+  "NUPHUS_BROWSER_EXE_PATH": "C:\\path\\to\\fingerprint-browser.exe",
+  "NUPHUS_BROWSER_NAME": "AdsPower",
+  "NUPHUS_BROWSER_USER_DATA_DIR": "C:\\path\\to\\profile"
+}
+```
+
+With the identity set, if the configured endpoint stops answering the server
+locates the window process by exe path, re-resolves its actual port (literal
+cmdline port, or `DevToolsActivePort` in the profile dir for random-port
+launches), verifies the candidate with a proxy-bypassing CDP probe and retries
+once — close and reopen the window and the next tool call just works. Without
+an identity, attach failures stay hard errors asking you to update the
+configured URL. Either way there is **no fallback to a managed Chrome**.
+
 ### Perceive models (local, auto-downloaded)
 
 `desktop_perceive` runs PaddleOCR locally with ONNX Runtime. The first call
